@@ -1,0 +1,18 @@
+{
+  "n_matches": 114675,
+  "n_dupes_removed": 2,
+  "by_tour": {
+    "ATP": 70067,
+    "WTA": 44608
+  },
+  "date_min": "2000-01-03",
+  "date_max": "2026-03-29",
+  "status_counts": {
+    "completed": 110949,
+    "retired": 3158,
+    "walkover": 559,
+    "other": 9
+  },
+  "with_any_odds": 110652,
+  "n_players": 2976
+}

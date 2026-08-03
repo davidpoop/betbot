@@ -8,8 +8,37 @@ y estados de candidata.
 ## Instalación
 
 ```bash
-pip install -e .          # requiere Python 3.11+
+pip install -e .          # requiere Python 3.11+ (incluye la interfaz Streamlit)
 ```
+
+## Uso diario en <5 minutos (interfaz)
+
+```bash
+betbot ui                  # abre la interfaz local en el navegador
+```
+
+1. **(~1 min, semanal)** Botón `🔄 Actualizar datos` en la barra lateral (o
+   `betbot update-data`): re-descarga fuentes vivas, refresca Elo/estado y
+   avisa de frescura por circuito. Los modelos congelados NO se re-entrenan.
+2. **(~2 min)** Pestaña **📅 Día**: teclea o importa los partidos y las cuotas
+   que ves en tu operador → botón `▶️ Analizar`. Filtra por circuito,
+   superficie, mercado, estado o rango de cuota; ordena por cualquier columna;
+   consulta el detalle por partido (probabilidades, cuota justa, `o_min`,
+   distribución de sets, avisos) y exporta CSV.
+3. **(~1 min)** Marca las candidatas que habrías seguido con `📌 Seguir esta
+   candidata` (quedan en el ledger con cuota, operador, timestamp y versión del
+   modelo). Si un día no hay candidatas, ese cero también queda registrado.
+4. **(~1 min, al día siguiente)** Pestaña **📌 Paper trading**: introduce la
+   cuota de cierre si la apuntaste (CLV) y pulsa `⚖️ Liquidar picks` — los
+   resultados se resuelven solos contra el dataset actualizado; el resto se
+   liquida manualmente. Las métricas prospectivas (PnL, yield, acierto,
+   drawdown, CLV) se acumulan separadas del backtest histórico.
+5. Pestaña **📈 Monitor**: calibración prospectiva, candidatas/día, % de días
+   sin picks, estados y reason codes de descartes, con avisos de muestra pequeña.
+
+Rankings actuales (opcional): rellena `data/manual/rankings_atp.csv` /
+`rankings_wta.csv` (plantillas via `betbot template`) copiando la tabla oficial;
+join as-of estricto (jamás ranking futuro) con fallback a Elo si faltan.
 
 ## Flujo completo (5 comandos)
 
@@ -94,6 +123,24 @@ screener (el Elo propio lleva la señal); WTA 2020–2025 con una sola casa;
 estado de jugadores congelado en la última fecha del dataset canónico
 (re-ejecuta `prepare-data` + `train` para refrescarlo); WTA sin biografía
 (mano/edad) por falta de fuente con licencia clara.
+
+## Comandos adicionales (CLI)
+
+```bash
+betbot update-data          # actualización incremental con salvaguardas explícitas
+betbot paper list|close|settle|metrics    # paper trading desde consola
+betbot monitor              # días, estados, descartes y calibración prospectiva
+betbot thresholds-report    # sensibilidad de umbrales SOLO en validación (no cambia defaults)
+betbot study-three-sets     # estudio de calibración de three_sets (test 2025 intacto)
+```
+
+Decisiones registradas de esta fase: `three_sets` mantiene AVISO permanente
+(`aviso_calibracion_three_sets`) porque su miscalibración (pendiente 1.14–1.34)
+no se corrige de forma robusta con recalibración temporalmente válida — el
+puente iid sobreestima los 3 sets en partidos igualados (obs. 40% vs ~48%
+teórico con |m−0.5|<0.1) y el patrón no transfiere de desarrollo a validación.
+Los umbrales por defecto NO han cambiado; el informe de sensibilidad es
+consultivo (pestaña ⚙️ Sensibilidad).
 
 ## Ledger y reproducibilidad
 
