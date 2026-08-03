@@ -3,9 +3,16 @@
 paths:
   raw_dir: data/raw
   canonical_dir: data/canonical
+  manual_dir: data/manual        # rankings y otros ficheros introducidos a mano
   artifacts_dir: artifacts
   reports_dir: artifacts/reports
   ledger_dir: artifacts/ledger
+
+rankings:
+  max_age_days: 45               # aviso si el ranking cargado es mas viejo
+
+paper:
+  retirement_rule: "1_set"       # 1_set (Pinnacle/Betfair) | match_completed (bet365)
 
 seed: 20260803
 

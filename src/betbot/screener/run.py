@@ -51,7 +51,9 @@ def _activity(state: dict, tour: str, pid: str, d: date, cfg_sel: dict) -> dict:
 
 
 def _build_feature_row(m: DayMatch, a_c: str, b_c: str, elo_state, act_a: dict, act_b: dict,
-                       bio: dict, market_logit: float) -> pd.DataFrame:
+                       bio: dict, market_logit: float,
+                       rank_a: tuple[int, float] | None = None,
+                       rank_b: tuple[int, float] | None = None) -> pd.DataFrame:
     def _age(pid: str) -> float | None:
         d0 = bio.get(pid, {}).get("dob")
         if d0 is None or (isinstance(d0, float) and math.isnan(d0)) or pd.isna(d0):
@@ -67,8 +69,10 @@ def _build_feature_row(m: DayMatch, a_c: str, b_c: str, elo_state, act_a: dict, 
     row = {
         "elo_diff": (elo_state.get(a_c) - elo_state.get(b_c)) / 100.0,
         "elo_surf_diff": (elo_state.get_surf(a_c, surface) - elo_state.get_surf(b_c, surface)) / 100.0,
-        "log_rank_ratio": 0.0,     # ranking actual no disponible en v1 (limitacion documentada)
-        "log_pts_ratio": 0.0,
+        "log_rank_ratio": (math.log(rank_b[0] / rank_a[0])
+                           if rank_a and rank_b and rank_a[0] > 0 and rank_b[0] > 0 else 0.0),
+        "log_pts_ratio": (math.log1p(rank_a[1]) - math.log1p(rank_b[1])
+                          if rank_a and rank_b else 0.0),
         "rest_diff": (act_a["rest"] - act_b["rest"]) / 7.0,
         "m14_diff": float(act_a["m14"] - act_b["m14"]),
         "m12m_diff": (act_a["m12"] - act_b["m12"]) / 10.0,
@@ -88,8 +92,45 @@ def _build_feature_row(m: DayMatch, a_c: str, b_c: str, elo_state, act_a: dict, 
     return pd.DataFrame([row])
 
 
-def run_screener(cfg: dict, matches_path: Path, odds_path: Path | None,
-                 out_path: Path | None) -> pd.DataFrame:
+def parse_matches_df(mdf: pd.DataFrame) -> tuple[list[DayMatch], list[str]]:
+    day_matches: list[DayMatch] = []
+    errors: list[str] = []
+    for i, r in mdf.iterrows():
+        try:
+            if not str(r.get("player_a", "")).strip():
+                continue
+            day_matches.append(DayMatch(
+                date=r["date"], tour=str(r["tour"]).strip().upper(), tournament=r["tournament"],
+                surface=r.get("surface", "Hard") or "Hard",
+                indoor=str(r.get("indoor", "false")).strip().lower() in ("true", "1", "si", "sí", "yes"),
+                round=r.get("round", ""), best_of=int(float(r.get("best_of", "3") or 3)),
+                player_a=r["player_a"], player_b=r["player_b"]))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"fila {i + 1} de partidos invalida: {exc}")
+    return day_matches, errors
+
+
+def parse_odds_df(odf: pd.DataFrame, now: datetime) -> tuple[list[OddsQuote], list[str]]:
+    quotes: list[OddsQuote] = []
+    errors: list[str] = []
+    for i, r in odf.iterrows():
+        try:
+            if not str(r.get("player_a", "")).strip():
+                continue
+            ts = str(r.get("timestamp", "") or "").strip()
+            quotes.append(OddsQuote(
+                player_a=r["player_a"], player_b=r["player_b"], market=str(r["market"]).strip(),
+                selection=str(r["selection"]), odds=float(r["odds"]),
+                bookmaker=r.get("bookmaker", "manual") or "manual",
+                timestamp=ts if ts else now.isoformat()))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"fila {i + 1} de cuotas invalida: {exc}")
+    return quotes, errors
+
+
+def screen_day(cfg: dict, day_matches: list[DayMatch], quotes: list[OddsQuote],
+               log_ledger: bool = True) -> tuple[pd.DataFrame, list[str]]:
+    """Núcleo del screener (compartido por CLI y UI). Devuelve (tabla, avisos)."""
     art = resolve_path(cfg, "artifacts_dir")
     canon = resolve_path(cfg, "canonical_dir")
     ledger_dir = resolve_path(cfg, "ledger_dir")
@@ -99,40 +140,50 @@ def run_screener(cfg: dict, matches_path: Path, odds_path: Path | None,
     bio = {p.player_id: {"dob": p.dob, "hand": p.hand} for p in players.itertuples(index=False)}
     cfg_sel = cfg["selection"]
     now = datetime.now(timezone.utc)
+    warnings: list[str] = []
 
-    # ---------- partidos ----------
-    mdf = _read_csv(matches_path)
-    day_matches: list[DayMatch] = []
-    for i, r in mdf.iterrows():
-        try:
-            day_matches.append(DayMatch(
-                date=r["date"], tour=r["tour"].strip().upper(), tournament=r["tournament"],
-                surface=r.get("surface", "Hard") or "Hard",
-                indoor=str(r.get("indoor", "false")).strip().lower() in ("true", "1", "si", "sí", "yes"),
-                round=r.get("round", ""), best_of=int(r.get("best_of", "3") or 3),
-                player_a=r["player_a"], player_b=r["player_b"]))
-        except Exception as exc:  # noqa: BLE001
-            click.echo(f"AVISO fila {i + 1} de partidos invalida: {exc}", err=True)
-
-    # ---------- cuotas ----------
-    quotes: list[OddsQuote] = []
-    if odds_path is not None:
-        odf = _read_csv(odds_path)
-        for i, r in odf.iterrows():
-            try:
-                ts = r.get("timestamp", "").strip()
-                quotes.append(OddsQuote(
-                    player_a=r["player_a"], player_b=r["player_b"], market=r["market"].strip(),
-                    selection=r["selection"], odds=float(r["odds"]),
-                    bookmaker=r.get("bookmaker", "manual") or "manual",
-                    timestamp=ts if ts else now.isoformat()))
-            except Exception as exc:  # noqa: BLE001
-                click.echo(f"AVISO fila {i + 1} de cuotas invalida: {exc}", err=True)
+    from betbot.ingest.rankings import load_rankings
+    manual_dir = resolve_path(cfg, "manual_dir")
+    rankings = {}
+    for tour in ("ATP", "WTA"):
+        rk = load_rankings(manual_dir, tour, now.date(),
+                           int(cfg.get("rankings", {}).get("max_age_days", 45)))
+        rankings[tour] = rk
+        warnings.extend(f"[rankings {tour}] {w}" for w in rk.warnings)
 
     rows: list[dict] = []
     for m in day_matches:
-        rows.extend(_screen_match(m, quotes, bundle, registry, bio, cfg_sel, now))
+        rows.extend(_screen_match(m, quotes, bundle, registry, bio, cfg_sel, now,
+                                  rankings=rankings))
+    for r in rows:
+        r["model_git_sha"] = bundle["meta"].get("git_sha")
+        r["model_data_hash"] = bundle["meta"].get("data_hash")
     out = pd.DataFrame(rows)
+
+    if log_ledger:
+        ledger_file = ledger_dir / "screen_runs.jsonl"
+        with open(ledger_file, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "run_at": now.isoformat(), "n_matches": len(day_matches), "n_quotes": len(quotes),
+                "model_meta": {k: bundle["meta"][k] for k in ("trained_at", "git_sha", "data_hash")},
+                "thresholds": {k: cfg_sel[k] for k in ("ev_min", "edge_min", "ev_strong", "edge_strong")},
+                "rows": rows}, ensure_ascii=False, default=str) + "\n")
+    return out, warnings
+
+
+def run_screener(cfg: dict, matches_path: Path, odds_path: Path | None,
+                 out_path: Path | None) -> pd.DataFrame:
+    now = datetime.now(timezone.utc)
+    day_matches, errs_m = parse_matches_df(_read_csv(matches_path))
+    quotes: list[OddsQuote] = []
+    errs_o: list[str] = []
+    if odds_path is not None:
+        quotes, errs_o = parse_odds_df(_read_csv(odds_path), now)
+    for e in errs_m + errs_o:
+        click.echo(f"AVISO {e}", err=True)
+    out, warnings = screen_day(cfg, day_matches, quotes)
+    for w in warnings:
+        click.echo(w, err=True)
 
     # ---------- salida ----------
     if len(out):
@@ -152,20 +203,13 @@ def run_screener(cfg: dict, matches_path: Path, odds_path: Path | None,
     if out_path is not None and len(out):
         out.to_csv(out_path, index=False)
         click.echo(f"\nExportado: {out_path}")
-
-    ledger_file = ledger_dir / "screen_runs.jsonl"
-    with open(ledger_file, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps({
-            "run_at": now.isoformat(), "n_matches": len(day_matches), "n_quotes": len(quotes),
-            "model_meta": {k: bundle["meta"][k] for k in ("trained_at", "git_sha", "data_hash")},
-            "thresholds": {k: cfg_sel[k] for k in ("ev_min", "edge_min", "ev_strong", "edge_strong")},
-            "rows": rows}, ensure_ascii=False, default=str) + "\n")
-    click.echo(f"Ledger actualizado: {ledger_file}")
+    click.echo(f"Ledger actualizado: {resolve_path(cfg, 'ledger_dir') / 'screen_runs.jsonl'}")
     return out
 
 
 def _screen_match(m: DayMatch, quotes: list[OddsQuote], bundle: dict, registry: set,
-                  bio: dict, cfg_sel: dict, now: datetime) -> list[dict]:
+                  bio: dict, cfg_sel: dict, now: datetime,
+                  rankings: dict | None = None) -> list[dict]:
     tour = m.tour.value
     tb = bundle["tours"][tour]
     elo_state = bundle["elo_states"][tour]
@@ -173,7 +217,9 @@ def _screen_match(m: DayMatch, quotes: list[OddsQuote], bundle: dict, registry: 
     ka, kb = canonical_key(m.player_a), canonical_key(m.player_b)
     match_label = f"{m.player_a} vs {m.player_b}"
     base = {"match": match_label, "tour": tour, "date": str(m.date),
-            "tournament": m.tournament, "recommended_primary": False}
+            "tournament": m.tournament, "surface": m.surface.title(), "round": m.round,
+            "best_of": m.best_of, "player_a": m.player_a, "player_b": m.player_b,
+            "recommended_primary": False}
 
     # ---------- resolución de identidades ----------
     hard_flags: list[str] = []
@@ -227,8 +273,24 @@ def _screen_match(m: DayMatch, quotes: list[OddsQuote], bundle: dict, registry: 
             break
     has_market = p_novig_feat is not None
 
+    # ---------- rankings actuales (as-of; fallback a Elo si faltan) ----------
+    rank_a = rank_b = None
+    rank_notes: list[str] = []
+    rk = (rankings or {}).get(tour)
+    if rk is not None and rk.published is not None:
+        ra_hit, rb_hit = rk.lookup(a_c), rk.lookup(b_c)
+        if ra_hit and rb_hit:
+            rank_a, rank_b = ra_hit, rb_hit
+        else:
+            for pid, hit in ((a_c, ra_hit), (b_c, rb_hit)):
+                if not hit:
+                    rank_notes.append(f"sin_ranking_actual:{pid}")
+    else:
+        rank_notes.append("sin_rankings_cargados_fallback_elo")
+
     # ---------- predicción ----------
-    feat = _build_feature_row(m, a_c, b_c, elo_state, act_a, act_b, bio, market_logit)
+    feat = _build_feature_row(m, a_c, b_c, elo_state, act_a, act_b, bio, market_logit,
+                              rank_a=rank_a, rank_b=rank_b)
     p4 = float(tb["match_calibrators"]["M4_full"].transform(tb["match_models"]["M4_full"].predict(feat))[0])
     if has_market:
         p5 = float(tb["match_calibrators"]["M5_market"].transform(
@@ -254,7 +316,11 @@ def _screen_match(m: DayMatch, quotes: list[OddsQuote], bundle: dict, registry: 
             pb = float(dcfg[mkt]["cal_bridge"].transform(
                 np.array([dv.bridge_prob(bridge_key if bridge_key in dv.DERIVED_MARKETS else mkt,
                                          p_match_c)]))[0])
-            return float(dv.combine(np.array([direct]), np.array([pb]), dcfg[mkt]["w_direct"])[0])
+            p = float(dv.combine(np.array([direct]), np.array([pb]), dcfg[mkt]["w_direct"])[0])
+            cp = dcfg[mkt].get("conditional_platt")
+            if cp is not None:   # recalibracion condicional adoptada tras estudio en validacion
+                p = float(cp.transform(np.array([p]), np.array([p_match_c]))[0])
+            return p
         mk = final_set_markets(
             m=p_match_c,
             p_set1=_combo("set1", p_dir["set1"], "set1"),
@@ -323,6 +389,10 @@ def _screen_match(m: DayMatch, quotes: list[OddsQuote], bundle: dict, registry: 
             sigma=sigma_match if q.market == "match_winner" else sigma_deriv,
             is_experimental=q.market in EXPERIMENTAL_MARKETS,
             hard_flags=flags, cfg_sel=cfg_sel)
+        if q.market == "three_sets":
+            # estudio 2026-08: pendiente de calibracion >1.1 no corregible de
+            # forma robusta -> aviso permanente (ver reports/three_sets_study.json)
+            me.reasons.append("aviso_calibracion_three_sets")
         evals.append(me)
 
     # sin cuota de moneyline: mostrar la vista del modelo (favorito probable)
@@ -339,6 +409,8 @@ def _screen_match(m: DayMatch, quotes: list[OddsQuote], bundle: dict, registry: 
     primary = pick_recommended_primary(evals)
     out_rows = []
     for e in evals:
+        if rank_notes:
+            e.reasons.extend(rank_notes)
         d = base | e.to_dict()
         d["recommended_primary"] = (primary is e)
         d["set_distribution"] = ({k: round(mk[k], 4) for k in ("p20", "p21", "p12", "p02")}
