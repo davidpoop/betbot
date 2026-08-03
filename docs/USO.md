@@ -1,9 +1,46 @@
 # betbot — uso del MVP
 
-Screener cuantitativo local de tenis (ATP/WTA, prepartido). **No ejecuta apuestas,
-no scrapea operadores, no depende de cuentas de apuestas.** Las cuotas del día
-las introduces tú; el sistema calcula probabilidades calibradas, valor esperado
-y estados de candidata.
+Screener cuantitativo local de tenis (ATP/WTA, prepartido). **No ejecuta apuestas
+ni scrapea operadores.** El flujo normal es automático (`betbot scan`); la
+entrada manual de partidos/cuotas queda como fallback.
+
+## Uso normal: descubrimiento automático
+
+```bash
+betbot scan                 # jornada ATP/WTA main tour + cuotas + señales
+betbot watch                # escaneo continuo cada 15 min con alertas
+```
+
+`scan` descubre los partidos elegibles (excluye Challenger/ITF/dobles/qualies/
+equipos), obtiene las cuotas disponibles de las fuentes configuradas, resuelve
+los nombres contra el registro interno (ambiguos → cuarentena/descartada),
+analiza todos los mercados con cuota real y muestra las señales ordenadas por
+estado, EV conservador y frescura, con una única ⭐ `recommended_primary` por
+partido y cobertura honesta (qué % de partidos tiene cuota y qué mercados
+faltan en la fuente). TODAS las evaluaciones (incluidas descartadas) van al
+ledger. Opciones:
+
+```bash
+betbot scan --today | --hours 48 | --tour ATP | --tour WTA
+betbot scan --market match_winner
+betbot scan --min-odds 1.40 --max-odds 1.60     # filtro SOLO de visualización
+betbot scan --show-watchlist                    # añade probable_sin_value
+betbot scan --show-rejected                     # añade descartadas/sin value
+betbot scan --export signals.csv
+betbot watch --interval 30 --no-notify
+```
+
+**Fuentes automáticas** (adaptadores sustituibles en `config feeds`):
+`github_te` — dataset público republicado en GitHub (partidos de HOY con
+moneyline, actualizado cada 6 h; sin superficie/ronda: se estima con aviso);
+`espn` — scoreboard JSON público (calendario 48 h y cuotas cuando las publica;
+bloqueado en el entorno de desarrollo, operativo en máquinas normales);
+`oddsapi` — The Odds API oficial con tu clave gratuita en `BETBOT_ODDS_API_KEY`
+(multioperador, Slams/1000/500). Si una fuente cae, el escaneo continúa con las
+demás y lo refleja. Los mercados de sets solo se evalúan si alguna fuente
+aporta su cuota real (nunca se inventan cuotas). `watch` alerta de señales
+nuevas, cruces de `o_min` y señales desaparecidas, sin repetir alertas, y
+guarda el historial de precios en el ledger.
 
 ## Instalación de doble clic (recomendada)
 

@@ -12,6 +12,12 @@ paths:
 rankings:
   max_age_days: 45               # aviso si el ranking cargado es mas viejo
 
+feeds:
+  calendar_order: [github_te, espn]        # adaptadores sustituibles (orden de prioridad)
+  odds_order: [github_te, espn, oddsapi]
+  ttl_seconds: 900                          # caché de red
+  odds_api_key: null                        # The Odds API (opcional; o BETBOT_ODDS_API_KEY)
+
 paper:
   retirement_rule: "1_set"       # 1_set (Pinnacle/Betfair) | match_completed (bet365)
 
@@ -45,6 +51,8 @@ selection:
   prob_likely: 0.60       # "evento probable sin value"
   odds_soft_range: [1.40, 4.00]  # fuera de rango -> aviso, no descarte
   odds_max_age_hours: 6.0
+  # umbral por operador/fuente (cadencia real de publicacion; TE publica cada 6h)
+  odds_max_age_hours_by_book: {TE: 8.0}
   z_sigma: 1.0            # p_rob = p - z*sigma (mercados parciales)
   shrink_w: null          # peso de shrinkage a mercado; si null se ajusta en validacion
   min_matches_12m: 5      # OOD: jugador con < N partidos en 12 meses

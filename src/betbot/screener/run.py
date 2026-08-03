@@ -373,7 +373,9 @@ def _screen_match(m: DayMatch, quotes: list[OddsQuote], bundle: dict, registry: 
         if ts.tzinfo is None:
             ts = ts.tz_localize("UTC")
         age_h = (now - ts.to_pydatetime()).total_seconds() / 3600
-        if age_h > cfg_sel["odds_max_age_hours"]:
+        max_age = float(cfg_sel.get("odds_max_age_hours_by_book", {}).get(
+            q.bookmaker, cfg_sel["odds_max_age_hours"]))
+        if age_h > max_age:
             flags.append(f"cuota_caducada({age_h:.1f}h)")
         p_sel = p_of(q.market, q.selection)
         if p_sel is None:

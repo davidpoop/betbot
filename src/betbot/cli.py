@@ -122,6 +122,52 @@ def screen(cfg: dict, matches_path: str, odds_path: str | None, out_path: str | 
                  Path(out_path) if out_path else None)
 
 
+@cli.command("scan")
+@click.option("--today", "today_only", is_flag=True, help="Solo los partidos de hoy (24h)")
+@click.option("--hours", type=int, default=48, show_default=True,
+              help="Ventana de búsqueda hacia delante")
+@click.option("--tour", "tours", type=click.Choice(["ATP", "WTA"]), multiple=True,
+              help="Limitar a un circuito (repetible)")
+@click.option("--market", "markets", multiple=True,
+              type=click.Choice(["match_winner", "set1_winner", "wins_set",
+                                 "straight_sets", "three_sets"]),
+              help="Limitar la salida a ciertos mercados")
+@click.option("--min-odds", type=float, default=None, help="Filtro de VISUALIZACIÓN (no de modelo)")
+@click.option("--max-odds", type=float, default=None, help="Filtro de VISUALIZACIÓN (no de modelo)")
+@click.option("--show-watchlist", is_flag=True, help="Incluir 'probable_sin_value'")
+@click.option("--show-rejected", is_flag=True, help="Incluir descartadas y sin_value")
+@click.option("--export", "export_path", type=click.Path(), default=None, help="CSV de señales")
+@click.pass_obj
+def scan_cmd(cfg: dict, today_only: bool, hours: int, tours: tuple, markets: tuple,
+             min_odds: float | None, max_odds: float | None, show_watchlist: bool,
+             show_rejected: bool, export_path: str | None) -> None:
+    """Descubre la jornada ATP/WTA, obtiene cuotas y devuelve las señales."""
+    from betbot.scan import render_report, run_scan
+    res = run_scan(cfg, hours=24 if today_only else hours,
+                   tours=list(tours) or None, markets=list(markets) or None,
+                   min_odds=min_odds, max_odds=max_odds,
+                   show_likely=show_watchlist, show_rejected=show_rejected,
+                   export=export_path)
+    click.echo(render_report(res))
+    if export_path and len(res.displayed):
+        click.echo(f"\nExportado: {export_path}")
+
+
+@cli.command("watch")
+@click.option("--interval", type=int, default=15, show_default=True, help="Minutos entre escaneos")
+@click.option("--hours", type=int, default=48, show_default=True)
+@click.option("--tour", "tours", type=click.Choice(["ATP", "WTA"]), multiple=True)
+@click.option("--no-notify", is_flag=True, help="Sin notificaciones del sistema")
+@click.option("--cycles", type=int, default=None, hidden=True, help="Solo para tests")
+@click.pass_obj
+def watch_cmd(cfg: dict, interval: int, hours: int, tours: tuple, no_notify: bool,
+              cycles: int | None) -> None:
+    """Escaneo continuo con alertas (señal nueva, cruce de o_min, señal caducada)."""
+    from betbot.watchcmd import run_watch
+    run_watch(cfg, interval_min=interval, max_cycles=cycles, notify=not no_notify,
+              hours=hours, tours=list(tours) or None)
+
+
 @cli.group("paper")
 def paper_group() -> None:
     """Paper trading prospectivo (picks virtuales, settlement, CLV, métricas)."""
