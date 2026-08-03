@@ -154,7 +154,7 @@ def build_features(elo_df: pd.DataFrame, players: pd.DataFrame, cfg: dict) -> tu
     out = pd.DataFrame(rows)
     state = {"last_date": {f"{k[0]}|{k[1]}": v.isoformat() for k, v in last_date.items()},
              "last_retired": {f"{k[0]}|{k[1]}": v.isoformat() for k, v in last_retired.items()},
-             "recent": {f"{k[0]}|{k[1]}": [x.isoformat() for x in v[-60:]] for k, v in recent.items()}}
+             "recent": {f"{k[0]}|{k[1]}": [x.isoformat() for x in v[-150:]] for k, v in recent.items()}}
     return out, state
 
 
