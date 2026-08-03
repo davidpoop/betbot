@@ -13,7 +13,7 @@ data:
   atp_years: [2000, 2026]
   wta_years: [2007, 2026]
   # Prioridad de casas para p_novig histórica (columna presente y ambas cuotas > 1.0)
-  book_priority: [PS, B365, Avg, Max]
+  book_priority: [PS, B365, Avg, Max, TD1]
 
 splits:
   train_end_year: 2022      # entrenamiento <= 2022
