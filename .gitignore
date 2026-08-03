@@ -5,3 +5,6 @@ __pycache__/
 data/raw/
 data/canonical/
 artifacts/
+build/
+dist/
+.venv/

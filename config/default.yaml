@@ -7,6 +7,7 @@ paths:
   artifacts_dir: artifacts
   reports_dir: artifacts/reports
   ledger_dir: artifacts/ledger
+  exports_dir: artifacts/exports
 
 rankings:
   max_age_days: 45               # aviso si el ranking cargado es mas viejo

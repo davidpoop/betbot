@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=BetBot
+Comment=Screener local de tenis (paper trading)
+Exec=bash -c 'cd "$(dirname "%k")" && ./ABRIR_BETBOT.sh'
+Icon=betbot
+Terminal=false
+Categories=Utility;

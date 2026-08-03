@@ -1,0 +1,11 @@
+#!/bin/bash
+# Lanzador de BetBot para macOS (doble clic, sin Terminal).
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+PY="$ROOT/.venv/bin/python"
+mkdir -p "$ROOT/artifacts/logs"
+if [ ! -x "$PY" ]; then
+  osascript -e 'display alert "BetBot no está instalado" message "Ejecuta primero INSTALAR_BETBOT.command (doble clic) en la carpeta de BetBot."'
+  exit 1
+fi
+cd "$ROOT"
+exec "$PY" -m betbot.launcher >> "$ROOT/artifacts/logs/launcher_app.log" 2>&1

@@ -18,10 +18,29 @@ from betbot.monitor import days_summary, prospective_calibration
 from betbot.screener.run import parse_matches_df, parse_odds_df, screen_day
 from betbot.ui import logic
 
-st.set_page_config(page_title="betbot — screener de tenis", layout="wide")
+st.set_page_config(page_title="BetBot — screener de tenis", page_icon="🎾", layout="wide")
 cfg = load_config()
 ART = resolve_path(cfg, "artifacts_dir")
 REPORTS = resolve_path(cfg, "reports_dir")
+EXPORTS = resolve_path(cfg, "exports_dir") if "exports_dir" in cfg["paths"] else ART / "exports"
+EXPORTS.mkdir(parents=True, exist_ok=True)
+LOGS_DIR = ART / "logs"
+
+
+def _open_folder(path: Path) -> str | None:
+    """Abre una carpeta en el explorador local. Devuelve error o None."""
+    import subprocess
+    import sys as _sys
+    try:
+        if _sys.platform.startswith("win"):
+            subprocess.Popen(["explorer", str(path)])
+        elif _sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+        return None
+    except Exception as exc:  # noqa: BLE001
+        return str(exc)
 
 
 @st.cache_resource
@@ -32,10 +51,95 @@ def _meta() -> dict:
     return joblib.load(p)["meta"]
 
 
+# ---------------- PRIMER ARRANQUE (asistente sin terminal) ----------------
+from betbot.firstrun import check_environment, needs_setup  # noqa: E402
+
+checks = check_environment(cfg)
+if needs_setup(checks):
+    st.title("🎾 BetBot — primer arranque")
+    st.caption("Servidor local en 127.0.0.1 (solo este ordenador). No se ejecutan apuestas.")
+    ok = "✅"
+    bad = "❌"
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"{ok if checks['python_ok'] else bad} Python {checks['python_version']} "
+                    f"(se requiere ≥ 3.11)")
+        st.markdown(f"{ok if checks['deps_ok'] else bad} Dependencias "
+                    + ("completas" if checks["deps_ok"] else f"faltan: {checks['missing_deps']}"))
+        st.markdown(f"{ok if checks['data_writable'] else bad} Permisos de escritura en data/")
+        st.markdown(f"{ok if checks['artifacts_writable'] else bad} Permisos de escritura en artifacts/")
+    with c2:
+        st.markdown(f"{ok if checks['raw_data_present'] else bad} Datos descargados (data/raw)")
+        st.markdown(f"{ok if checks['canonical_present'] else bad} Dataset preparado (canónico)")
+        st.markdown(f"{ok if checks['models_present'] else bad} Modelos y calibradores entrenados")
+    if not checks["python_ok"] or checks["missing_deps"]:
+        st.error("Ejecuta el instalador (INSTALAR_BETBOT) para reparar el entorno y vuelve a abrir BetBot.")
+    if not (checks["data_writable"] and checks["artifacts_writable"]):
+        st.error("BetBot no puede escribir en sus carpetas. Muévelo a una carpeta con permisos "
+                 "(p. ej. Documentos) y vuelve a abrirlo.")
+    st.divider()
+    b1, b2, b3, b4 = st.columns(4)
+    if b1.button("⬇️ 1. Descargar datos", disabled=checks["raw_data_present"]):
+        from betbot.ingest.download import download_all
+        with st.status("Descargando fuentes reales (~40 MB)...", expanded=True) as s:
+            res = download_all(resolve_path(cfg, "raw_dir"))
+            st.write(f"OK: {len(res['ok'])} · ya presentes: {len(res['skipped'])}")
+            for f in res["failed"]:
+                st.error(f"Fallo: {f}")
+            s.update(label="Descarga terminada", state="complete")
+        st.rerun()
+    if b2.button("🧱 2. Preparar datos", disabled=not checks["raw_data_present"]):
+        from betbot.canonical.build import build_canonical
+        with st.status("Construyendo dataset canónico (~2 min)...", expanded=True) as s:
+            summary = build_canonical(resolve_path(cfg, "raw_dir"), resolve_path(cfg, "canonical_dir"))
+            st.write(f"Partidos: {summary['n_matches']} · hasta {summary['date_max']}")
+            s.update(label="Dataset preparado", state="complete")
+        st.rerun()
+    if b3.button("🧠 3. Entrenar modelos", disabled=not checks["canonical_present"]):
+        from betbot.models.train import run_training
+        with st.status("Entrenando baselines y calibración (~2-3 min)... "
+                       "El test sellado 2025 NO se toca.", expanded=True) as s:
+            report = run_training(cfg)
+            for tour in report.get("tours", {}):
+                m5 = report["tours"][tour]["match_models_oof"].get("M5_market", {})
+                st.write(f"{tour}: log loss OOF M5 = {m5.get('log_loss')}")
+            s.update(label="Modelos entrenados", state="complete")
+        _meta.clear()
+        st.rerun()
+    if b4.button("🔁 Reintentar comprobación"):
+        st.rerun()
+    st.stop()
+
 meta = _meta()
 if not meta:
-    st.error("No hay modelo entrenado. Ejecuta: betbot download-data && betbot prepare-data && betbot train")
+    st.error("Faltan artefactos del modelo. Usa los botones de primer arranque (recarga la página).")
     st.stop()
+
+
+# ---------------- cabecera de estado ----------------
+@st.cache_data
+def _freshness(state_max: str) -> dict:
+    from betbot.canonical.store import load_matches
+    m = load_matches(resolve_path(cfg, "canonical_dir"))
+    return {t: str(m.loc[m["tour"] == t, "date"].max()) for t in ("ATP", "WTA")}
+
+
+fresh = _freshness(str(meta.get("state_data_max_date", "")))
+h1, h2, h3, h4 = st.columns([2, 2, 2, 3])
+h1.metric("Datos ATP hasta", fresh.get("ATP", "—"))
+h2.metric("Datos WTA hasta", fresh.get("WTA", "—"))
+h3.metric("Modelo", str(meta.get("git_sha", "—")))
+h4.markdown("🔒 **Servidor solo local (127.0.0.1)** · sin ejecución de apuestas\n\n"
+            f"Entrenado {str(meta.get('trained_at'))[:10]} · datos `{meta.get('data_hash')}`")
+_today = date.today()
+for _t, _d in fresh.items():
+    try:
+        _age = (_today - pd.Timestamp(_d).date()).days
+        if _age > 45:
+            st.warning(f"⚠️ Los datos de {_t} tienen {_age} días (hasta {_d}). Usa "
+                       "«Actualizar datos» y/o «Importar resultados recientes» en la barra lateral.")
+    except (ValueError, TypeError):
+        pass
 
 # ---------------- sidebar ----------------
 with st.sidebar:
@@ -47,18 +151,22 @@ with st.sidebar:
     st.markdown(f"Umbrales: EV≥{cfg['selection']['ev_min']:.0%}, "
                 f"edge≥{cfg['selection']['edge_min']:.0%} "
                 f"(fuerte: {cfg['selection']['ev_strong']:.0%}/{cfg['selection']['edge_strong']:.0%})")
-    if st.button("🔄 Actualizar datos (incremental)"):
+    conf_upd = st.checkbox("Confirmo actualizar (2–3 min)", key="conf_upd")
+    if st.button("🔄 Actualizar datos (incremental)", disabled=not conf_upd):
         from betbot.ingest.update import run_update
-        with st.spinner("Descargando fuentes vivas y refrescando estado..."):
-            try:
-                log = run_update(cfg)
-                st.success(f"OK · nuevos partidos: {log.get('new_matches', '?')} · "
-                           f"frescura: {log['freshness_by_tour']}")
-                for wmsg in log.get("safeguards", []):
-                    st.warning(wmsg)
-                _meta.clear()
-            except RuntimeError as exc:
-                st.error(str(exc))
+        prog = st.progress(10, text="Descargando fuentes vivas...")
+        try:
+            log = run_update(cfg)
+            prog.progress(90, text="Refrescando Elo y estado...")
+            st.success(f"OK · nuevos partidos: {log.get('new_matches', '?')} · "
+                       f"frescura: {log['freshness_by_tour']}")
+            for wmsg in log.get("safeguards", []):
+                st.warning(wmsg)
+            _meta.clear()
+            _freshness.clear()
+            prog.progress(100, text="Actualización completa")
+        except RuntimeError as exc:
+            st.error(str(exc))
     if st.button("⚖️ Liquidar picks contra resultados"):
         res = paper.settle_from_canonical(cfg)
         st.success(f"Liquidados: {res['settled']} · abiertos: {res['still_open']} (regla {res['rule']})")
@@ -84,6 +192,34 @@ with st.sidebar:
                 refresh_state(cfg)
             st.success("Estado y Elo actualizados (modelos intactos).")
             _meta.clear()
+            _freshness.clear()
+    st.divider()
+    st.markdown("**🧰 Utilidades**")
+    from betbot.ingest.manual_results import RESULTS_TEMPLATE
+    from betbot.screener.templates import MATCHES_TEMPLATE, ODDS_TEMPLATE
+    st.download_button("📄 Plantilla de resultados", RESULTS_TEMPLATE,
+                       file_name="recent_results.csv", use_container_width=True)
+    st.download_button("📄 Plantilla de partidos", MATCHES_TEMPLATE,
+                       file_name="day_matches.csv", use_container_width=True)
+    st.download_button("📄 Plantilla de cuotas", ODDS_TEMPLATE,
+                       file_name="day_odds.csv", use_container_width=True)
+    if st.button("📂 Abrir carpeta de exportaciones", use_container_width=True):
+        err = _open_folder(EXPORTS)
+        st.error(f"No se pudo abrir: {err}") if err else st.toast("Carpeta abierta")
+    if st.button("🧾 Abrir carpeta de logs", use_container_width=True):
+        err = _open_folder(LOGS_DIR if LOGS_DIR.exists() else ART)
+        st.error(f"No se pudo abrir: {err}") if err else st.toast("Carpeta abierta")
+    with st.expander("Últimas líneas del log técnico"):
+        lg = LOGS_DIR / "streamlit.log"
+        st.code("\n".join(lg.read_text(encoding="utf-8", errors="replace").splitlines()[-30:])
+                if lg.exists() else "sin log aún", language=None)
+    st.divider()
+    if st.button("🛑 Cerrar BetBot", type="secondary", use_container_width=True):
+        from betbot.launcher import STOP_FILE
+        STOP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STOP_FILE.write_text("stop")
+        st.warning("Cerrando BetBot de forma segura... puedes cerrar esta pestaña. "
+                   "Para volver a abrirlo, usa ABRIR_BETBOT.")
 
 tab_day, tab_paper, tab_mon, tab_sens = st.tabs(
     ["📅 Día", "📌 Paper trading", "📈 Monitor", "⚙️ Sensibilidad"])
@@ -149,8 +285,13 @@ with tab_day:
         view = logic.sort_results(logic.filter_results(
             res, tours or None, surfaces or None, markets or None, states or None, odds_rng))
         st.dataframe(view[logic.RESULT_COLS], use_container_width=True, height=380)
-        st.download_button("⬇️ Exportar CSV", view.to_csv(index=False).encode(),
-                           file_name=f"oportunidades_{date.today()}.csv")
+        cexp1, cexp2 = st.columns(2)
+        cexp1.download_button("⬇️ Descargar CSV", view.to_csv(index=False).encode(),
+                              file_name=f"oportunidades_{date.today()}.csv")
+        if cexp2.button("💾 Guardar en carpeta de exportaciones"):
+            outp = EXPORTS / f"oportunidades_{date.today()}.csv"
+            view.to_csv(outp, index=False)
+            st.success(f"Guardado: {outp.name} (usa «Abrir carpeta de exportaciones»)")
 
         cA, cB = st.columns(2)
         with cA:
@@ -276,8 +417,13 @@ with tab_sens:
         st.caption(f"Periodo {r['period']} · non_executable={r['non_executable']} · "
                    f"default actual: {r['default']} · {r['note']}")
         st.dataframe(pd.DataFrame(r["grid"]), use_container_width=True)
-    else:
-        st.info("Genera el informe con: betbot thresholds-report")
+    conf_thr = st.checkbox("Confirmo regenerar el informe (~1 min, solo validación)")
+    if st.button("📊 Generar/actualizar informe de umbrales", disabled=not conf_thr):
+        from betbot.analysis import threshold_sensitivity
+        with st.status("Calculando parrilla de umbrales en validación...", expanded=False) as s:
+            threshold_sensitivity(cfg)
+            s.update(label="Informe actualizado", state="complete")
+        st.rerun()
     st.divider()
     st.subheader("Estudio three_sets")
     p2 = REPORTS / "three_sets_study.json"

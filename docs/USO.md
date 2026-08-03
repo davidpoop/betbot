@@ -5,7 +5,22 @@ no scrapea operadores, no depende de cuentas de apuestas.** Las cuotas del día
 las introduces tú; el sistema calcula probabilidades calibradas, valor esperado
 y estados de candidata.
 
-## Instalación
+## Instalación de doble clic (recomendada)
+
+Descomprime `BetBot_portable.zip` y sigue `LEEME_PRIMERO.txt`: **1)** doble clic
+en `INSTALAR_BETBOT` (.bat en Windows, .command en macOS, .sh en Linux; solo la
+primera vez, necesita Python 3.11+ e Internet una vez), **2)** doble clic en
+`ABRIR_BETBOT.vbs` / `BetBot.app` / `ABRIR_BETBOT.sh` — se abre el navegador
+sin ninguna consola, en un puerto libre y **solo en 127.0.0.1**. Si BetBot ya
+está abierto, el lanzador reenfoca la pestaña y avisa (instancia única).
+Cierre seguro: botón «🛑 Cerrar BetBot» en la barra lateral o `CERRAR_BETBOT`.
+`DESINSTALAR_BETBOT` elimina el entorno sin borrar tus datos ni picks.
+Si faltan datos o modelos, la interfaz muestra la pantalla de primer arranque
+con botones (Descargar → Preparar → Entrenar → Reintentar); el test sellado
+2025 nunca se ejecuta desde ahí. Logs en `artifacts/logs/`.
+`BetBot.exe` opcional: `CONSTRUIR_BETBOT_EXE.bat` (PyInstaller, reproducible).
+
+## Instalación manual (desarrolladores)
 
 ```bash
 pip install -e .          # requiere Python 3.11+ (incluye la interfaz Streamlit)
