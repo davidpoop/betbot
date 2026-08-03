@@ -166,9 +166,10 @@ def _determined_outcome(market: str, sel: str, flip: bool, row: pd.Series,
 
 
 def settle_from_canonical(cfg: dict) -> dict:
-    """Liquida los picks abiertos contra el dataset canónico actualizado."""
+    """Liquida los picks abiertos contra el dataset actualizado (mirrors + manuales)."""
+    from betbot.canonical.store import load_matches
     canon = resolve_path(cfg, "canonical_dir")
-    matches = pd.read_parquet(canon / "matches.parquet")
+    matches = load_matches(canon)
     rule = cfg.get("paper", {}).get("retirement_rule", "1_set")
     df = load_picks(cfg)
     open_idx = df.index[df["status"] == "open"]

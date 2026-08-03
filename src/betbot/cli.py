@@ -48,6 +48,24 @@ def update_data(cfg: dict) -> None:
     click.echo(json.dumps(log, indent=2, ensure_ascii=False))
 
 
+@cli.command("import-results")
+@click.option("--file", "file_path", type=click.Path(exists=True), required=True,
+              help="CSV con la plantilla recent_results.csv")
+@click.option("--allow-new", is_flag=True,
+              help="Acepta jugadores no presentes en el registro (por defecto van a cuarentena)")
+@click.option("--dry-run", is_flag=True, help="Solo validar; no escribe nada")
+@click.pass_obj
+def import_results_cmd(cfg: dict, file_path: str, allow_new: bool, dry_run: bool) -> None:
+    """Incorpora resultados recientes introducidos a mano (append-only) y
+    refresca Elo/actividad/descanso. No descarga ni scrapea nada."""
+    from betbot.ingest.manual_results import import_results
+    report = import_results(cfg, Path(file_path), allow_new=allow_new, dry_run=dry_run)
+    click.echo(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    if not dry_run and report["n_accepted"] > 0:
+        from betbot.state import refresh_state
+        click.echo(json.dumps(refresh_state(cfg), indent=2, ensure_ascii=False))
+
+
 @cli.command("train")
 @click.pass_obj
 def train(cfg: dict) -> None:

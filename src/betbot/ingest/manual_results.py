@@ -1,0 +1,195 @@
+"""Importación manual de resultados recientes (sin scraping ni descargas).
+
+Plantilla: recent_results.csv (via `betbot template`). El marcador va SIEMPRE
+orientado al GANADOR ("6-4 3-6 7-6"; en retiradas incluye el parcial: "6-4 3-1").
+
+Validaciones por fila (las inválidas se rechazan con motivo; nada se corrige en
+silencio): fecha parseable y NO futura; tour/superficie/best_of/status válidos;
+ganador != perdedor; marcador coherente con best_of y status; duplicados (dentro
+del fichero y contra el dataset fusionado). Nombres no reconocidos van a
+CUARENTENA con sugerencias (o se aceptan como jugadores nuevos con allow_new).
+
+Cada importación queda registrada con SHA256 en manual_imports_log.jsonl.
+"""
+from __future__ import annotations
+
+import difflib
+import hashlib
+import json
+from datetime import date, datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+
+from betbot.canonical.names import canonical_key
+from betbot.canonical.score import infer_retired, parse_score_string
+from betbot.canonical.store import append_manual, existing_match_ids
+from betbot.config import resolve_path
+
+RESULTS_TEMPLATE = """\
+# Resultados recientes introducidos a mano (via legal; sin scraping).
+# score: orientado al GANADOR ("6-4 7-6(3)"); en retiradas, sets jugados incl. parcial ("6-4 3-1").
+# status: completed | retired | walkover  ·  surface: Hard|Clay|Grass|Carpet  ·  best_of: 3|5
+date,tour,tournament,surface,indoor,round,best_of,winner,loser,score,status
+# 2026-08-02,ATP,Canadian Open,Hard,false,Semifinals,3,Alcaraz C.,Ruud C.,6-3 6-4,completed
+# 2026-08-02,WTA,Canadian Open,Hard,false,The Final,3,Swiatek I.,Gauff C.,6-4 3-1,retired
+"""
+
+_VALID_SURFACES = {"Hard", "Clay", "Grass", "Carpet"}
+_VALID_STATUS = {"completed", "retired", "walkover"}
+
+
+def _row_error(i: int, msg: str) -> dict:
+    return {"row": i, "error": msg}
+
+
+def import_results(cfg: dict, file: Path, allow_new: bool = False,
+                   dry_run: bool = False, today: date | None = None) -> dict:
+    """Valida e incorpora resultados. Devuelve informe con aceptadas/rechazadas/
+    cuarentena. Con dry_run no escribe nada."""
+    canon = resolve_path(cfg, "canonical_dir")
+    file = Path(file)
+    raw = file.read_bytes()
+    sha = hashlib.sha256(raw).hexdigest()[:16]
+    today = today or datetime.now(timezone.utc).date()
+
+    players_path = canon / "players.parquet"
+    registry = set(pd.read_parquet(players_path)["player_id"]) if players_path.exists() else set()
+    known_ids = existing_match_ids(canon)
+
+    df = pd.read_csv(file, comment="#", dtype=str).fillna("")
+    accepted: list[dict] = []
+    rejected: list[dict] = []
+    quarantined: list[dict] = []
+    seen_in_file: set[str] = set()
+
+    for i, r in df.iterrows():
+        rownum = i + 1
+        try:
+            d = pd.to_datetime(str(r["date"]).strip()).date()
+        except (ValueError, TypeError):
+            rejected.append(_row_error(rownum, f"fecha invalida: {r.get('date')}"))
+            continue
+        if d > today:
+            rejected.append(_row_error(rownum, f"dato_futuro: {d} > {today}"))
+            continue
+        tour = str(r.get("tour", "")).strip().upper()
+        if tour not in ("ATP", "WTA"):
+            rejected.append(_row_error(rownum, f"tour invalido: {tour}"))
+            continue
+        surface = str(r.get("surface", "")).strip().title() or "Hard"
+        if surface not in _VALID_SURFACES:
+            rejected.append(_row_error(rownum, f"superficie invalida: {surface}"))
+            continue
+        status = str(r.get("status", "completed")).strip().lower() or "completed"
+        if status not in _VALID_STATUS:
+            rejected.append(_row_error(rownum, f"status invalido: {status}"))
+            continue
+        try:
+            best_of = int(float(r.get("best_of", "3") or 3))
+            assert best_of in (3, 5)
+        except (ValueError, AssertionError):
+            rejected.append(_row_error(rownum, f"best_of invalido: {r.get('best_of')}"))
+            continue
+        w_raw, l_raw = str(r.get("winner", "")).strip(), str(r.get("loser", "")).strip()
+        w_key, l_key = canonical_key(w_raw), canonical_key(l_raw)
+        if not w_key or not l_key or w_key == l_key:
+            rejected.append(_row_error(rownum, f"jugadores invalidos: '{w_raw}' vs '{l_raw}'"))
+            continue
+
+        # ---------- cuarentena de nombres no reconocidos ----------
+        unknown = [(name, key) for name, key in ((w_raw, w_key), (l_raw, l_key))
+                   if key not in registry]
+        if unknown and not allow_new:
+            sugg = {name: difflib.get_close_matches(key, registry, n=3, cutoff=0.75)
+                    for name, key in unknown}
+            quarantined.append({"row": rownum, "winner": w_raw, "loser": l_raw,
+                                "date": str(d), "unknown": {n: s for n, s in sugg.items()},
+                                "hint": "corrige el nombre o reimporta con --allow-new"})
+            continue
+
+        # ---------- marcador ----------
+        score_str = str(r.get("score", "")).strip()
+        ps = parse_score_string(score_str)
+        need = best_of // 2 + 1
+        if status == "completed":
+            if ps.sets_w != need or ps.sets_l >= need:
+                rejected.append(_row_error(
+                    rownum, f"marcador_incoherente para completed Bo{best_of}: '{score_str}' "
+                            f"(sets ganador={ps.sets_w})"))
+                continue
+        elif status == "retired":
+            if ps.n_sets == 0:
+                rejected.append(_row_error(rownum, "retirada sin marcador: usa walkover si no se jugo"))
+                continue
+            if not infer_retired(ps, best_of) and ps.sets_w >= need:
+                rejected.append(_row_error(
+                    rownum, f"marcador completo con status retired: '{score_str}'"))
+                continue
+        elif status == "walkover" and ps.n_sets > 0:
+            rejected.append(_row_error(rownum, f"walkover no debe llevar marcador: '{score_str}'"))
+            continue
+
+        a_key, b_key = (w_key, l_key) if w_key < l_key else (l_key, w_key)
+        a_is_winner = a_key == w_key
+        match_id = f"{tour}_{d.isoformat()}_{a_key}__{b_key}"
+        if match_id in seen_in_file:
+            rejected.append(_row_error(rownum, f"duplicado dentro del fichero: {match_id}"))
+            continue
+        if match_id in known_ids:
+            rejected.append(_row_error(rownum, f"duplicado (ya existe en el dataset): {match_id}"))
+            continue
+        seen_in_file.add(match_id)
+
+        set1_w = ps.set1_w if ps.set1_completed else None
+        accepted.append({
+            "tour": tour, "date": d, "tournament": str(r.get("tournament", "")).strip(),
+            "series": "", "surface": surface,
+            "indoor": str(r.get("indoor", "false")).strip().lower() in ("true", "1", "si", "sí", "yes"),
+            "round": str(r.get("round", "")).strip(), "best_of": best_of,
+            "player_a": a_key, "player_b": b_key,
+            "raw_name_a": w_raw if a_is_winner else l_raw,
+            "raw_name_b": l_raw if a_is_winner else w_raw,
+            "label_a_wins": (1 if a_is_winner else 0) if status != "walkover" else None,
+            "status": status,
+            "sets_a": ps.sets_w if a_is_winner else ps.sets_l,
+            "sets_b": ps.sets_l if a_is_winner else ps.sets_w,
+            "games_a": ps.games_w if a_is_winner else ps.games_l,
+            "games_b": ps.games_l if a_is_winner else ps.games_w,
+            "set1_winner_a": (set1_w if a_is_winner else 1 - set1_w) if set1_w is not None else None,
+            "rank_a": None, "rank_b": None, "pts_a": None, "pts_b": None,
+            "odds_json": "{}",
+            "source": f"manual_import:{file.name}",
+            "match_id": match_id,
+        })
+
+    report = {
+        "file": str(file), "sha256_16": sha,
+        "imported_at": datetime.now(timezone.utc).isoformat(),
+        "n_rows": int(len(df)), "n_accepted": len(accepted),
+        "n_rejected": len(rejected), "n_quarantined": len(quarantined),
+        "rejected": rejected, "quarantined": quarantined,
+        "dry_run": dry_run, "allow_new": allow_new,
+    }
+    if dry_run or not accepted:
+        if not dry_run:
+            _log(canon, report)
+        return report
+
+    new_df = pd.DataFrame(accepted)
+    total_manual = append_manual(canon, new_df)
+    report["total_manual_rows"] = int(total_manual)
+    if quarantined:
+        qpath = canon / "import_quarantine.csv"
+        qdf = pd.DataFrame(quarantined)
+        if qpath.exists():
+            qdf = pd.concat([pd.read_csv(qpath), qdf], ignore_index=True)
+        qdf.to_csv(qpath, index=False)
+        report["quarantine_file"] = str(qpath)
+    _log(canon, report)
+    return report
+
+
+def _log(canon: Path, report: dict) -> None:
+    with open(canon / "manual_imports_log.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(report, ensure_ascii=False, default=str) + "\n")

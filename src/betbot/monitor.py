@@ -77,10 +77,10 @@ def prospective_calibration(cfg: dict) -> dict:
     última emisión por partido."""
     runs = _runs(cfg)
     canon = resolve_path(cfg, "canonical_dir")
-    mp = canon / "matches.parquet"
-    if not runs or not mp.exists():
+    if not runs or not (canon / "matches.parquet").exists():
         return {"n": 0, "warning": "sin datos suficientes"}
-    matches = pd.read_parquet(mp)
+    from betbot.canonical.store import load_matches
+    matches = load_matches(canon)
     matches["d"] = pd.to_datetime(matches["date"]).dt.date
 
     latest: dict[tuple, dict] = {}

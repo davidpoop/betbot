@@ -15,14 +15,11 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-import joblib
 import pandas as pd
 
 from betbot.canonical.build import build_canonical
 from betbot.config import resolve_path
-from betbot.features.builder import build_features, derived_targets
 from betbot.ingest.download import SOURCES, download_all
-from betbot.ratings.elo import replay
 
 # fuentes que pueden cambiar (el resto es histórico congelado)
 LIVE_SOURCES = {"tennisdata_atp_2025", "tennisdata_atp_2026", "kaggle_daily_wta", "kaggle_daily_atp"}
@@ -76,28 +73,13 @@ def run_update(cfg: dict) -> dict:
     for bak in backups.values():
         bak.unlink(missing_ok=True)
 
-    # ---------- 3. refresco de estado SIN re-entrenar ----------
-    bundle_path = art / "model_bundle.joblib"
-    if bundle_path.exists():
-        bundle = joblib.load(bundle_path)
-        matches = pd.read_parquet(canon_dir / "matches.parquet")
-        players = pd.read_parquet(canon_dir / "players.parquet")
-        elo_df, elo_states = replay(matches, cfg["elo"])
-        feats_all, activity_state = build_features(elo_df, players, cfg)
-        feats_all = derived_targets(feats_all)
-        feats_all["year"] = pd.to_datetime(feats_all["date"]).dt.year
-        bundle["elo_states"] = elo_states
-        bundle["activity_state"] = activity_state
-        bundle["meta"]["state_refreshed_at"] = datetime.now(timezone.utc).isoformat()
-        bundle["meta"]["state_data_max_date"] = summary["date_max"]
-        joblib.dump(bundle, bundle_path)
-        feats_all.to_parquet(art / "features_all.parquet", index=False)
-        log["state"] = "refrescado (modelos congelados intactos)"
-    else:
-        log["state"] = "sin bundle: ejecuta 'betbot train' primero"
+    # ---------- 3. refresco de estado SIN re-entrenar (dataset fusionado) ----------
+    from betbot.state import refresh_state
+    log["state"] = refresh_state(cfg).get("state")
 
-    # ---------- 4. frescura por circuito ----------
-    m = pd.read_parquet(canon_dir / "matches.parquet")
+    # ---------- 4. frescura por circuito (incluye resultados manuales) ----------
+    from betbot.canonical.store import load_matches
+    m = load_matches(canon_dir)
     fresh = {t: str(m.loc[m["tour"] == t, "date"].max()) for t in ("ATP", "WTA")}
     log["freshness_by_tour"] = fresh
     today = datetime.now(timezone.utc).date()

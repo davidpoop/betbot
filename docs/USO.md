@@ -124,9 +124,32 @@ estado de jugadores congelado en la última fecha del dataset canónico
 (re-ejecuta `prepare-data` + `train` para refrescarlo); WTA sin biografía
 (mano/edad) por falta de fuente con licencia clara.
 
+## Importar resultados recientes a mano (cuando los mirrors van con retraso)
+
+```bash
+betbot template                                   # escribe recent_results.csv
+# ... rellena filas copiando resultados de webs oficiales (via legal, sin scraping) ...
+betbot import-results --file recent_results.csv   # valida + append-only + refresca Elo/estado
+betbot import-results --file f.csv --dry-run      # solo validar
+betbot import-results --file f.csv --allow-new    # acepta jugadores nuevos (si no: cuarentena)
+```
+
+Formato: `date,tour,tournament,surface,indoor,round,best_of,winner,loser,score,status`
+con el marcador orientado al GANADOR (`6-4 7-6(3)`; retiradas con parcial `6-4 3-1`;
+walkover sin marcador). Validaciones: fecha no futura, marcador coherente con
+best_of y status, duplicados (fichero y dataset), y **cuarentena con sugerencias**
+para nombres no reconocidos (`data/canonical/import_quarantine.csv`). Cada
+importación queda registrada con SHA256 en `manual_imports_log.jsonl`. Los
+resultados manuales viven en `manual_results.parquet` (append-only, sobrevive a
+las reconstrucciones de mirrors; si el mirror alcanza ese partido, el mirror
+manda). Tras importar, el Elo (general y por superficie), la actividad y el
+descanso se recalculan con el replay determinista; los modelos no se tocan.
+También disponible en la interfaz (barra lateral → *Importar resultados recientes*).
+
 ## Comandos adicionales (CLI)
 
 ```bash
+betbot import-results --file recent_results.csv   # resultados manuales (ver arriba)
 betbot update-data          # actualización incremental con salvaguardas explícitas
 betbot paper list|close|settle|metrics    # paper trading desde consola
 betbot monitor              # días, estados, descartes y calibración prospectiva

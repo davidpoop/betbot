@@ -27,9 +27,12 @@ player_a,player_b,market,selection,odds,bookmaker,timestamp
 
 
 def write_templates(out_dir: Path) -> list[Path]:
+    from betbot.ingest.manual_results import RESULTS_TEMPLATE
     out_dir.mkdir(parents=True, exist_ok=True)
     p1 = out_dir / "day_matches.csv"
     p2 = out_dir / "day_odds.csv"
+    p3 = out_dir / "recent_results.csv"
     p1.write_text(MATCHES_TEMPLATE, encoding="utf-8")
     p2.write_text(ODDS_TEMPLATE, encoding="utf-8")
-    return [p1, p2]
+    p3.write_text(RESULTS_TEMPLATE, encoding="utf-8")
+    return [p1, p2, p3]

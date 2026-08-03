@@ -62,6 +62,28 @@ with st.sidebar:
     if st.button("⚖️ Liquidar picks contra resultados"):
         res = paper.settle_from_canonical(cfg)
         st.success(f"Liquidados: {res['settled']} · abiertos: {res['still_open']} (regla {res['rule']})")
+    st.divider()
+    st.markdown("**📥 Importar resultados recientes** (plantilla `recent_results.csv`)")
+    up_r = st.file_uploader("CSV de resultados", type="csv", key="up_results",
+                            label_visibility="collapsed")
+    allow_new = st.checkbox("Aceptar jugadores nuevos (si no, cuarentena)", value=False)
+    if up_r is not None and st.button("Importar resultados"):
+        from betbot.ingest.manual_results import import_results
+        from betbot.state import refresh_state
+        tmp = Path(resolve_path(cfg, "ledger_dir")) / f"_upload_{up_r.name}"
+        tmp.write_bytes(up_r.getvalue())
+        rep = import_results(cfg, tmp, allow_new=allow_new)
+        st.success(f"Aceptadas {rep['n_accepted']} · rechazadas {rep['n_rejected']} · "
+                   f"cuarentena {rep['n_quarantined']}")
+        for q in rep["quarantined"][:5]:
+            st.warning(f"Cuarentena fila {q['row']}: {q['unknown']}")
+        for e in rep["rejected"][:5]:
+            st.warning(f"Rechazada fila {e['row']}: {e['error']}")
+        if rep["n_accepted"] > 0:
+            with st.spinner("Refrescando Elo y estado..."):
+                refresh_state(cfg)
+            st.success("Estado y Elo actualizados (modelos intactos).")
+            _meta.clear()
 
 tab_day, tab_paper, tab_mon, tab_sens = st.tabs(
     ["📅 Día", "📌 Paper trading", "📈 Monitor", "⚙️ Sensibilidad"])
