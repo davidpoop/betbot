@@ -1,0 +1,48 @@
+# Configuración por defecto del MVP. Todos los umbrales de selección están
+# pre-registrados aquí; solo se revisan en fechas fijas, nunca tras ver resultados.
+paths:
+  raw_dir: data/raw
+  canonical_dir: data/canonical
+  artifacts_dir: artifacts
+  reports_dir: artifacts/reports
+  ledger_dir: artifacts/ledger
+
+seed: 20260803
+
+data:
+  atp_years: [2000, 2026]
+  wta_years: [2007, 2026]
+  # Prioridad de casas para p_novig histórica (columna presente y ambas cuotas > 1.0)
+  book_priority: [PS, B365, Avg, Max]
+
+splits:
+  train_end_year: 2022      # entrenamiento <= 2022
+  valid_years: [2023, 2024] # seleccion de modelo/calibrador/umbrales
+  test_year: 2025           # SELLADO: un unico acceso via 'betbot evaluate --test'
+  walkforward_first_valid_year: 2013
+
+elo:
+  start_rating: 1500.0
+  # K estilo FiveThirtyEight: K = k_base / (n_partidos + offset) ** shape
+  k_base: 250.0
+  k_offset: 5.0
+  k_shape: 0.4
+
+selection:
+  # Estados de candidata (pre-registrados)
+  ev_min: 0.03            # EV_cons minimo para candidata normal / experimental
+  edge_min: 0.02          # edge minimo vs no-vig (mercados completos)
+  ev_strong: 0.05         # candidata fuerte
+  edge_strong: 0.03
+  prob_likely: 0.60       # "evento probable sin value"
+  odds_soft_range: [1.40, 4.00]  # fuera de rango -> aviso, no descarte
+  odds_max_age_hours: 6.0
+  z_sigma: 1.0            # p_rob = p - z*sigma (mercados parciales)
+  shrink_w: null          # peso de shrinkage a mercado; si null se ajusta en validacion
+  min_matches_12m: 5      # OOD: jugador con < N partidos en 12 meses
+  layoff_days_ood: 90     # OOD: regreso tras lesion larga
+  stale_days_unknown: 540 # sin partidos en este periodo -> jugador desconocido/retirado
+
+markets:
+  principal: [match_winner]
+  experimental: [set1_winner, wins_set, straight_sets, three_sets, set_score]
