@@ -40,3 +40,25 @@ def get_json(url: str, ttl_seconds: int = 300, timeout: int = 30,
                 json.JSONDecodeError, OSError) as exc:
             last_exc = exc
     raise RuntimeError(f"fuente inaccesible tras {1 + len(_BACKOFF)} intentos: {url} ({last_exc})")
+
+
+def get_text(url: str, ttl_seconds: int = 300, timeout: int = 60,
+             headers: dict | None = None) -> str:
+    """GET texto plano (CSV, etc.) con la misma caché TTL y backoff que get_json."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cpath = CACHE_DIR / (hashlib.sha256(url.encode()).hexdigest()[:24] + ".txt")
+    if cpath.exists() and (time.time() - cpath.stat().st_mtime) < ttl_seconds:
+        return cpath.read_text(encoding="utf-8")
+    last_exc: Exception | None = None
+    for wait in [0.0] + _BACKOFF:
+        if wait:
+            time.sleep(wait)
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "betbot/0.1"} | (headers or {}))
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+            cpath.write_text(text, encoding="utf-8")
+            return text
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+            last_exc = exc
+    raise RuntimeError(f"fuente inaccesible tras {1 + len(_BACKOFF)} intentos: {url} ({last_exc})")

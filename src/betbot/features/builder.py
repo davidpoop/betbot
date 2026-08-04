@@ -152,9 +152,14 @@ def build_features(elo_df: pd.DataFrame, players: pd.DataFrame, cfg: dict) -> tu
         n_matches[kb] = n_matches.get(kb, 0) + 1
 
     out = pd.DataFrame(rows)
+    freshness = {}
+    if len(out):
+        for tour, grp in out.groupby("tour"):
+            freshness[str(tour)] = max(grp["date"]).isoformat()
     state = {"last_date": {f"{k[0]}|{k[1]}": v.isoformat() for k, v in last_date.items()},
              "last_retired": {f"{k[0]}|{k[1]}": v.isoformat() for k, v in last_retired.items()},
-             "recent": {f"{k[0]}|{k[1]}": [x.isoformat() for x in v[-150:]] for k, v in recent.items()}}
+             "recent": {f"{k[0]}|{k[1]}": [x.isoformat() for x in v[-150:]] for k, v in recent.items()},
+             "freshness": freshness}
     return out, state
 
 

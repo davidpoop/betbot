@@ -82,7 +82,8 @@ def test_e2e_screener_cli(tmp_path):
     # distribución de sets exportada y coherente
     sd = ml.iloc[0]["set_distribution"]
     dist = json.loads(sd.replace("'", '"')) if isinstance(sd, str) else sd
-    assert abs(sum(dist.values()) - 1.0) < 1e-6
+    # los valores exportados van redondeados a 4 decimales: tolerancia acorde
+    assert abs(sum(dist.values()) - 1.0) < 1e-3
 
 
 @pytest.mark.skipif(not BUNDLE.exists(), reason="ejecutar antes 'betbot train'")

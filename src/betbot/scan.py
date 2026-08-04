@@ -75,12 +75,29 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
              show_rejected: bool = False, export: str | None = None,
              calendar_sources: list[CalendarSource] | None = None,
              odds_sources: list[OddsSource] | None = None,
-             log_ledger: bool = True) -> ScanResult:
+             log_ledger: bool = True, sync_results: bool = False) -> ScanResult:
     if calendar_sources is None or odds_sources is None:
         d_cal, d_odds = default_sources(cfg)
         calendar_sources = calendar_sources or d_cal
         odds_sources = odds_sources or d_odds
     statuses: list[SourceStatus] = []
+
+    # ---------- 0. sync de resultados (por defecto en CLI; --no-sync-results lo salta) ----------
+    sync_report: dict | None = None
+    if sync_results:
+        try:
+            from betbot.sync import run_sync
+            full = run_sync(cfg)
+            sync_report = {k: full.get(k) for k in
+                           ("n_accepted", "n_duplicates_skipped", "n_quarantined",
+                            "sources", "window")}
+        except Exception as exc:  # noqa: BLE001 - el sync nunca detiene el scan
+            sync_report = {"error": str(exc)}
+    try:
+        from betbot.sync import local_freshness
+        results_freshness = {k: str(v) for k, v in local_freshness(cfg).items()}
+    except Exception:  # noqa: BLE001
+        results_freshness = {}
 
     # ---------- 1. calendario (tolerante a fallos por fuente) ----------
     found: list[FeedMatch] = []
@@ -160,10 +177,17 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
         disp = disp.sort_values(["_rank", "ev_cons", "odds_age_min"],
                                 ascending=[True, False, True]).drop(columns="_rank")
 
-    # ---------- 6. cobertura honesta ----------
+    # ---------- 6. cobertura honesta (por mercado, nunca solo moneyline) ----------
     quoted_matches = {(q.player_a, q.player_b) for q in quotes}
     n_with_odds = sum(1 for m in eligible if (m.player1, m.player2) in quoted_matches
                       or (m.player2, m.player1) in quoted_matches)
+    all_markets = list(SUPPORTED_MARKETS) + sorted(
+        {q.market for q in quotes} - set(SUPPORTED_MARKETS))
+    market_coverage: dict[str, int] = {}
+    for mk in all_markets:
+        keys = {frozenset((q.player_a, q.player_b)) for q in quotes if q.market == mk}
+        market_coverage[mk] = sum(1 for m in eligible
+                                  if frozenset((m.player1, m.player2)) in keys)
     unresolved = 0
     if len(out):
         unresolved = out[(out["state"] == "descartada")
@@ -171,6 +195,9 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
             "match"].nunique()
     markets_available = sorted({q.market for q in quotes})
     state_counts = out["state"].value_counts().to_dict() if len(out) else {}
+    n_stale = 0
+    if len(out):
+        n_stale = int(out["reasons"].str.contains("cuota_caducada", na=False).sum())
     summary = {
         "date": str(date.today()),
         "window_hours": hours,
@@ -180,10 +207,14 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
         "unresolved_players": int(unresolved),
         "matches_with_odds": n_with_odds,
         "odds_coverage_pct": round(100.0 * n_with_odds / len(eligible), 1) if eligible else 0.0,
+        "market_coverage": market_coverage,
         "markets_evaluated": int(len(out)),
         "markets_with_quotes": markets_available,
         "markets_missing_from_sources": [m for m in SUPPORTED_MARKETS if m not in markets_available],
+        "stale_discarded": n_stale,
         "states": state_counts,
+        "results_freshness": results_freshness,
+        "sync": sync_report,
         "sources": [{"name": s.name, "ok": s.ok, "n": s.n_items, "error": s.error,
                      "data_timestamp": s.data_timestamp, "notes": s.notes} for s in statuses],
         "warnings": warns,
@@ -219,21 +250,56 @@ def _mark_best_odds(out: pd.DataFrame) -> pd.Series:
 
 # ---------------- salida de terminal ----------------
 
+_MARKET_LABELS = {"match_winner": "Moneyline", "set1_winner": "Primer set",
+                  "wins_set": "Gana un set (+1.5)", "straight_sets": "2-0 (sets corridos)",
+                  "three_sets": "Total sets (O/U 2.5)", "set_score": "Marcador exacto de sets"}
+
+
 def render_report(res: ScanResult, show_likely: bool = False) -> str:
     s = res.summary
     lines: list[str] = []
     lines.append(f"BETBOT — {s['date']}  (ventana {s['window_hours']}h)")
+    # frescura de resultados por circuito, SIEMPRE antes del resto del informe
+    fresh = s.get("results_freshness") or {}
+    if fresh:
+        parts = []
+        for t in ("ATP", "WTA"):
+            if t in fresh:
+                try:
+                    age = (date.fromisoformat(s["date"]) - date.fromisoformat(fresh[t])).days
+                except ValueError:
+                    age = 0
+                warn = f" ⚠ {age}d de retraso" if age > 2 else ""
+                parts.append(f"{t} hasta {fresh[t]}{warn}")
+            else:
+                parts.append(f"{t}: sin datos")
+        lines.append("Frescura resultados: " + "  ·  ".join(parts))
+    sync = s.get("sync")
+    if sync is not None:
+        if sync.get("error"):
+            lines.append(f"Sync resultados: FALLO ({sync['error']}) — se mantiene el último estado válido")
+        else:
+            srcs = ", ".join(f"{x['name']}:{'OK' if x['ok'] else 'FALLO'}"
+                             for x in sync.get("sources", []))
+            lines.append(f"Sync resultados: +{sync.get('n_accepted', 0)} nuevos, "
+                         f"{sync.get('n_duplicates_skipped', 0)} duplicados omitidos, "
+                         f"{sync.get('n_quarantined', 0)} en cuarentena  [{srcs}]")
     lines.append(f"Partidos encontrados: {s['found']}  ·  elegibles main tour: {s['eligible']} "
                  f"(excluidos: dobles {s['excluded']['doubles']}, challenger {s['excluded']['challenger']}, "
                  f"itf {s['excluded']['itf']}, otros {s['excluded']['other'] + s['excluded']['qualifying']})")
     lines.append(f"Partidos analizados: {s['analyzed_matches']}  ·  no enlazados: {s['unresolved_players']}")
-    lines.append(f"Cobertura de cuotas: {s['matches_with_odds']}/{s['eligible']} "
-                 f"({s['odds_coverage_pct']}%)  ·  mercados con cuota: "
-                 f"{', '.join(s['markets_with_quotes']) or 'ninguno'}")
+    # cobertura POR MERCADO: nunca un "100%" que sea solo moneyline
+    cov = s.get("market_coverage") or {}
+    if cov:
+        lines.append("Cobertura de cuotas por mercado: "
+                     + ";  ".join(f"{_MARKET_LABELS.get(m, m)}: {n}/{s['eligible']}"
+                                  for m, n in cov.items()))
     if s["markets_missing_from_sources"]:
-        lines.append(f"Mercados SIN cuota en las fuentes activas: "
-                     f"{', '.join(s['markets_missing_from_sources'])}")
-    lines.append(f"Mercados evaluados: {s['markets_evaluated']}")
+        lines.append(f"Mercados SIN cuota en las fuentes activas (not_offered): "
+                     f"{', '.join(_MARKET_LABELS.get(m, m) for m in s['markets_missing_from_sources'])}")
+    stale = s.get("stale_discarded", 0)
+    lines.append(f"Mercados evaluados: {s['markets_evaluated']}"
+                 + (f"  ·  descartados por cuota caducada: {stale}" if stale else ""))
     st = s["states"]
     lines.append(f"Fuertes: {st.get('fuerte', 0)}  Normales: {st.get('normal', 0)}  "
                  f"Experimentales: {st.get('experimental', 0)}  Vigilar: {st.get('vigilar_precio', 0)}  "

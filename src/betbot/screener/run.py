@@ -17,7 +17,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from betbot.canonical.names import canonical_key
+from betbot.canonical.names import canonical_key, extend_initials
 from betbot.config import resolve_path
 from betbot.features.builder import _ROUND_LEVEL, _MAX_REST_DAYS  # reutiliza las mismas constantes
 from betbot.models import derived as dv
@@ -33,20 +33,34 @@ def _read_csv(path: Path) -> pd.DataFrame:
 
 
 def _activity(state: dict, tour: str, pid: str, d: date, cfg_sel: dict) -> dict:
+    """Actividad as-of con corrección de frescura: si NUESTROS datos del circuito
+    terminan mucho antes del partido (retraso del proveedor), la inactividad se
+    mide contra la fecha de frescura F, no contra la fecha del partido — así una
+    jugadora activa hasta F no se convierte en un falso OOD."""
     key = f"{tour}|{pid}"
     ld = state["last_date"].get(key)
     last = date.fromisoformat(ld) if ld else None
+    f_raw = (state.get("freshness") or {}).get(tour)
+    fresh = date.fromisoformat(f_raw) if f_raw else d
+    lag_days = max(0, (d - fresh).days)
+    freshness_unknown = lag_days > int(cfg_sel.get("freshness_lag_max_days", 14))
+    ref = min(d, fresh) if freshness_unknown else d      # ventana efectiva de observación
     rest = min(float((d - last).days), _MAX_REST_DAYS) if last else _MAX_REST_DAYS
     rec = [date.fromisoformat(x) for x in state["recent"].get(key, [])]
     m14 = sum(1 for x in rec if 0 <= (d - x).days <= 14)
-    m12 = sum(1 for x in rec if 0 <= (d - x).days <= 365)
+    m12 = sum(1 for x in rec if 0 <= (ref - x).days <= 365)
     lr = state["last_retired"].get(key)
     lr_d = date.fromisoformat(lr) if lr else None
+    gap_vs_data = (fresh - last).days if last else 10 ** 6
     return {
         "last_date": last, "rest": rest, "m14": m14, "m12": m12,
         "layoff": 1.0 if (last and (d - last).days >= cfg_sel["layoff_days_ood"]) else 0.0,
         "retired_recent": 1.0 if (lr_d and (d - lr_d).days <= 30) else 0.0,
-        "stale": last is None or (d - last).days >= cfg_sel["stale_days_unknown"],
+        # inactividad REAL: medida dentro de la ventana observada, no inflada por
+        # el retraso de la fuente
+        "stale": last is None or gap_vs_data >= cfg_sel["stale_days_unknown"],
+        "freshness_unknown": freshness_unknown,
+        "freshness_date": fresh, "lag_days": lag_days,
     }
 
 
@@ -215,6 +229,9 @@ def _screen_match(m: DayMatch, quotes: list[OddsQuote], bundle: dict, registry: 
     elo_state = bundle["elo_states"][tour]
     act_state = bundle["activity_state"]
     ka, kb = canonical_key(m.player_a), canonical_key(m.player_b)
+    # extensión determinista de iniciales ("Struff J." -> struff_j_l) solo si
+    # hay exactamente una candidata en el registro; nunca coincidencia difusa
+    ka, kb = extend_initials(ka, registry), extend_initials(kb, registry)
     match_label = f"{m.player_a} vs {m.player_b}"
     base = {"match": match_label, "tour": tour, "date": str(m.date),
             "tournament": m.tournament, "surface": m.surface.title(), "round": m.round,
@@ -227,16 +244,24 @@ def _screen_match(m: DayMatch, quotes: list[OddsQuote], bundle: dict, registry: 
         if key not in registry:
             sugg = difflib.get_close_matches(key, registry, n=3, cutoff=0.75)
             hard_flags.append(f"jugador_desconocido:{name}" + (f" (¿{'|'.join(sugg)}?)" if sugg else ""))
+    soft_flags: list[str] = []
     if not hard_flags:
         a_c, b_c = (ka, kb) if ka < kb else (kb, ka)
         flip = a_c != ka          # el jugador A del usuario es el B canónico
         act_a = _activity(act_state, tour, a_c, m.date, cfg_sel)
         act_b = _activity(act_state, tour, b_c, m.date, cfg_sel)
+        if act_a["freshness_unknown"]:
+            soft_flags.append(f"data_freshness_unknown({tour} hasta "
+                              f"{act_a['freshness_date']}, {act_a['lag_days']}d de retraso)")
         for pid, act in ((a_c, act_a), (b_c, act_b)):
             if act["stale"]:
                 hard_flags.append(f"ood_sin_actividad_reciente:{pid}")
             elif act["m12"] < cfg_sel["min_matches_12m"]:
-                hard_flags.append(f"ood_pocos_partidos_12m:{pid}({act['m12']})")
+                if act["freshness_unknown"]:
+                    # el retraso es de la FUENTE: aviso, no falso OOD
+                    soft_flags.append(f"historial_escaso_en_datos:{pid}(m12={act['m12']})")
+                else:
+                    hard_flags.append(f"ood_pocos_partidos_12m:{pid}({act['m12']})")
 
     # cuotas del partido (acepta también el orden invertido de jugadores)
     mq: list[OddsQuote] = []
@@ -413,6 +438,8 @@ def _screen_match(m: DayMatch, quotes: list[OddsQuote], bundle: dict, registry: 
     for e in evals:
         if rank_notes:
             e.reasons.extend(rank_notes)
+        if soft_flags:
+            e.reasons.extend(soft_flags)
         d = base | e.to_dict()
         d["recommended_primary"] = (primary is e)
         d["set_distribution"] = ({k: round(mk[k], 4) for k in ("p20", "p21", "p12", "p02")}

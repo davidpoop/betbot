@@ -43,21 +43,11 @@ def _row_error(i: int, msg: str) -> dict:
     return {"row": i, "error": msg}
 
 
-def import_results(cfg: dict, file: Path, allow_new: bool = False,
-                   dry_run: bool = False, today: date | None = None) -> dict:
-    """Valida e incorpora resultados. Devuelve informe con aceptadas/rechazadas/
-    cuarentena. Con dry_run no escribe nada."""
-    canon = resolve_path(cfg, "canonical_dir")
-    file = Path(file)
-    raw = file.read_bytes()
-    sha = hashlib.sha256(raw).hexdigest()[:16]
-    today = today or datetime.now(timezone.utc).date()
-
-    players_path = canon / "players.parquet"
-    registry = set(pd.read_parquet(players_path)["player_id"]) if players_path.exists() else set()
-    known_ids = existing_match_ids(canon)
-
-    df = pd.read_csv(file, comment="#", dtype=str).fillna("")
+def prepare_rows(df: pd.DataFrame, *, registry: set, known_ids: set,
+                 source_label: str, allow_new: bool | str, today: date
+                 ) -> tuple[list[dict], list[dict], list[dict]]:
+    """Núcleo de validación por filas (compartido por la importación manual y la
+    sincronización automática). Devuelve (aceptadas, rechazadas, cuarentena)."""
     accepted: list[dict] = []
     rejected: list[dict] = []
     quarantined: list[dict] = []
@@ -98,15 +88,21 @@ def import_results(cfg: dict, file: Path, allow_new: bool = False,
             continue
 
         # ---------- cuarentena de nombres no reconocidos ----------
+        # allow_new=True: acepta cualquier desconocido. allow_new=False: todos a
+        # cuarentena. allow_new="unambiguous" (sync): acepta desconocidos SIN
+        # parecido a nadie del registro (debutantes reales); si hay una clave
+        # parecida (posible errata), a cuarentena — nunca se aproxima en silencio.
         unknown = [(name, key) for name, key in ((w_raw, w_key), (l_raw, l_key))
                    if key not in registry]
-        if unknown and not allow_new:
+        if unknown and allow_new is not True:
             sugg = {name: difflib.get_close_matches(key, registry, n=3, cutoff=0.75)
                     for name, key in unknown}
-            quarantined.append({"row": rownum, "winner": w_raw, "loser": l_raw,
-                                "date": str(d), "unknown": {n: s for n, s in sugg.items()},
-                                "hint": "corrige el nombre o reimporta con --allow-new"})
-            continue
+            has_close = any(s for s in sugg.values())
+            if allow_new != "unambiguous" or has_close:
+                quarantined.append({"row": rownum, "winner": w_raw, "loser": l_raw,
+                                    "date": str(d), "unknown": {n: s for n, s in sugg.items()},
+                                    "hint": "corrige el nombre o reimporta con --allow-new"})
+                continue
 
         # ---------- marcador ----------
         score_str = str(r.get("score", "")).strip()
@@ -159,9 +155,30 @@ def import_results(cfg: dict, file: Path, allow_new: bool = False,
             "set1_winner_a": (set1_w if a_is_winner else 1 - set1_w) if set1_w is not None else None,
             "rank_a": None, "rank_b": None, "pts_a": None, "pts_b": None,
             "odds_json": "{}",
-            "source": f"manual_import:{file.name}",
+            "source": source_label,
             "match_id": match_id,
         })
+    return accepted, rejected, quarantined
+
+
+def import_results(cfg: dict, file: Path, allow_new: bool = False,
+                   dry_run: bool = False, today: date | None = None) -> dict:
+    """Valida e incorpora resultados desde CSV. Devuelve informe con aceptadas/
+    rechazadas/cuarentena. Con dry_run no escribe nada."""
+    canon = resolve_path(cfg, "canonical_dir")
+    file = Path(file)
+    raw = file.read_bytes()
+    sha = hashlib.sha256(raw).hexdigest()[:16]
+    today = today or datetime.now(timezone.utc).date()
+
+    players_path = canon / "players.parquet"
+    registry = set(pd.read_parquet(players_path)["player_id"]) if players_path.exists() else set()
+    known_ids = existing_match_ids(canon)
+
+    df = pd.read_csv(file, comment="#", dtype=str).fillna("")
+    accepted, rejected, quarantined = prepare_rows(
+        df, registry=registry, known_ids=known_ids,
+        source_label=f"manual_import:{file.name}", allow_new=allow_new, today=today)
 
     report = {
         "file": str(file), "sha256_16": sha,

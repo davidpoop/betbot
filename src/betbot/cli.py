@@ -122,6 +122,51 @@ def screen(cfg: dict, matches_path: str, odds_path: str | None, out_path: str | 
                  Path(out_path) if out_path else None)
 
 
+@cli.command("sync-results")
+@click.option("--days", type=int, default=None,
+              help="Tope de backfill en días (defecto: feeds.sync_max_days)")
+@click.option("--no-refresh", is_flag=True, help="No recalcular Elo/estado tras incorporar")
+@click.pass_obj
+def sync_results_cmd(cfg: dict, days: int | None, no_refresh: bool) -> None:
+    """Sincroniza resultados recientes ATP/WTA desde fuentes estructuradas
+    (append-only; una segunda ejecución no duplica ni altera el Elo)."""
+    from betbot.sync import freshness_header, run_sync
+    report = run_sync(cfg, days=days, refresh=not no_refresh)
+    click.echo(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    click.echo(freshness_header(cfg))
+
+
+@cli.group("feeds")
+def feeds_group() -> None:
+    """Estado y prueba de las fuentes (calendario, cuotas, resultados, mercados)."""
+
+
+@feeds_group.command("status")
+@click.pass_obj
+def feeds_status_cmd(cfg: dict) -> None:
+    """Fuentes configuradas y si su credencial está presente (nunca se imprime)."""
+    from betbot.feeds.manage import feeds_status
+    click.echo(json.dumps(feeds_status(cfg), indent=2, ensure_ascii=False))
+
+
+@feeds_group.command("test")
+@click.pass_obj
+def feeds_test_cmd(cfg: dict) -> None:
+    """Prueba real de cada fuente activa (peticiones de solo lectura)."""
+    from betbot.feeds.manage import feeds_test
+    click.echo(json.dumps(feeds_test(cfg), indent=2, ensure_ascii=False, default=str))
+
+
+@feeds_group.command("markets")
+@click.option("--hours", type=int, default=48, show_default=True)
+@click.pass_obj
+def feeds_markets_cmd(cfg: dict, hours: int) -> None:
+    """Catálogo REAL de mercados por evento en los proveedores estructurados."""
+    from betbot.feeds.manage import feeds_markets
+    click.echo(json.dumps(feeds_markets(cfg, hours=hours), indent=2,
+                          ensure_ascii=False, default=str))
+
+
 @cli.command("scan")
 @click.option("--today", "today_only", is_flag=True, help="Solo los partidos de hoy (24h)")
 @click.option("--hours", type=int, default=48, show_default=True,
@@ -137,17 +182,20 @@ def screen(cfg: dict, matches_path: str, odds_path: str | None, out_path: str | 
 @click.option("--show-watchlist", is_flag=True, help="Incluir 'probable_sin_value'")
 @click.option("--show-rejected", is_flag=True, help="Incluir descartadas y sin_value")
 @click.option("--export", "export_path", type=click.Path(), default=None, help="CSV de señales")
+@click.option("--no-sync-results", is_flag=True,
+              help="No sincronizar resultados recientes antes de escanear")
 @click.pass_obj
 def scan_cmd(cfg: dict, today_only: bool, hours: int, tours: tuple, markets: tuple,
              min_odds: float | None, max_odds: float | None, show_watchlist: bool,
-             show_rejected: bool, export_path: str | None) -> None:
-    """Descubre la jornada ATP/WTA, obtiene cuotas y devuelve las señales."""
+             show_rejected: bool, export_path: str | None, no_sync_results: bool) -> None:
+    """Descubre la jornada ATP/WTA, obtiene cuotas y devuelve las señales.
+    Por defecto sincroniza antes los resultados recientes (--no-sync-results lo evita)."""
     from betbot.scan import render_report, run_scan
     res = run_scan(cfg, hours=24 if today_only else hours,
                    tours=list(tours) or None, markets=list(markets) or None,
                    min_odds=min_odds, max_odds=max_odds,
                    show_likely=show_watchlist, show_rejected=show_rejected,
-                   export=export_path)
+                   export=export_path, sync_results=not no_sync_results)
     click.echo(render_report(res))
     if export_path and len(res.displayed):
         click.echo(f"\nExportado: {export_path}")

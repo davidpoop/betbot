@@ -15,6 +15,9 @@ rankings:
 feeds:
   calendar_order: [github_te, espn]        # adaptadores sustituibles (orden de prioridad)
   odds_order: [github_te, espn, oddsapi]
+  results_order: [sportradar, github]       # fuentes de resultados para sync-results
+  structured_odds_order: [betfair, sportradar_odds]  # mercados de sets (catalogo dinamico)
+  sync_max_days: 30                         # tope de backfill por ciclo de sync
   ttl_seconds: 900                          # caché de red
   odds_api_key: null                        # The Odds API (opcional; o BETBOT_ODDS_API_KEY)
 
@@ -58,6 +61,10 @@ selection:
   min_matches_12m: 5      # OOD: jugador con < N partidos en 12 meses
   layoff_days_ood: 90     # OOD: regreso tras lesion larga
   stale_days_unknown: 540 # sin partidos en este periodo -> jugador desconocido/retirado
+  # si NUESTROS datos del circuito van con mas retraso que esto respecto al
+  # partido, la falta de historial se marca data_freshness_unknown (aviso),
+  # nunca como falso OOD del jugador
+  freshness_lag_max_days: 14
 
 markets:
   principal: [match_winner]
