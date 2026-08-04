@@ -1,11 +1,16 @@
 """`betbot watch`: escaneo continuo con alertas deduplicadas.
 
-- Repite `scan` cada N minutos (15 por defecto).
+- Repite `scan` cada N minutos (15 por defecto); sincroniza resultados en el
+  primer ciclo y después cada ~6 h (cadencia real de las fuentes).
 - Alerta en terminal (y notificación local best-effort) cuando:
-  * aparece una señal nueva (fuerte/normal/experimental);
+  * aparece una señal nueva (fuerte/normal/experimental) — moneyline o sets;
   * una cuota cruza al alza su o_min (una oportunidad "vigilar" se activa);
-  * una señal previa desaparece o caduca.
-- No repite la misma alerta; guarda historial de precios en el ledger.
+  * una señal previa desaparece o caduca;
+  * un partido publica cuota en un mercado que antes no tenía;
+  * cambia la fuente con mejor cuota de una selección;
+  * la fuente estructurada suspende un mercado;
+  * cambia el estado OOD de un partido tras un sync de resultados.
+- Sin alertas repetidas sin cambio material; historial de precios en el ledger.
 - No ejecuta apuestas.
 """
 from __future__ import annotations
@@ -87,6 +92,71 @@ def diff_alerts(prev_signals: dict[str, dict], new_signals: dict[str, dict],
     return alerts, alerted
 
 
+def market_snapshot(rows: pd.DataFrame, summary: dict) -> dict:
+    """Estado por ciclo para alertas de mercado: mercados cotizados por partido,
+    mejor fuente por selección, mercados suspendidos y partidos en OOD."""
+    snap = {"quoted": set(), "best": {}, "suspended": set(), "ood": {}}
+    if rows is not None and len(rows):
+        with_odds = rows[rows["odds"].notna()]
+        for _, r in with_odds.iterrows():
+            snap["quoted"].add((r["match"], r["market"]))
+        for (match, market, sel), grp in with_odds.groupby(["match", "market", "selection"]):
+            best = grp.loc[grp["odds"].idxmax()]
+            snap["best"][(match, market, sel)] = str(best["bookmaker"])
+        ood = rows[rows["reasons"].fillna("").str.contains("ood_", na=False)]
+        for _, r in ood.iterrows():
+            toks = [t.split("(")[0].split(":")[0] for t in str(r["reasons"]).split(";")
+                    if t.strip().startswith("ood_")]
+            snap["ood"][r["match"]] = ";".join(sorted(set(toks)))
+    for e in (summary.get("structured") or {}).get("events", []):
+        for m in e.get("suspended", []):
+            snap["suspended"].add((e["match"], m))
+    return snap
+
+
+def market_alerts(prev: dict | None, cur: dict, alerted: set[str],
+                  synced: bool) -> tuple[list[str], set[str]]:
+    """Alertas de mercado del ciclo (deduplicadas). Con prev=None (primer
+    ciclo) solo se alertan suspensiones: el estado inicial no es un cambio."""
+    alerts: list[str] = []
+    seen = set(alerted)
+    for match, market in sorted(cur["suspended"]):
+        tag = f"susp:{match}|{market}"
+        if tag not in seen:
+            alerts.append(f"⛔ MERCADO SUSPENDIDO: {match} · {market}")
+            seen.add(tag)
+    if prev is None:
+        return alerts, seen
+    for match, market in sorted(cur["quoted"] - prev["quoted"]):
+        tag = f"mkt:{match}|{market}"
+        if tag not in seen:
+            alerts.append(f"🆕 MERCADO NUEVO CON CUOTA: {match} · {market}")
+            seen.add(tag)
+    for key, bk in cur["best"].items():
+        old = prev["best"].get(key)
+        if old is not None and old != bk:
+            tag = f"best:{'|'.join(key)}:{bk}"
+            if tag not in seen:
+                match, market, sel = key
+                alerts.append(f"🔀 MEJOR FUENTE: {match} · {market}/{sel} "
+                              f"ahora {bk} (antes {old})")
+                seen.add(tag)
+    if synced:
+        for match, reasons in cur["ood"].items():
+            if match not in prev["ood"]:
+                tag = f"ood_on:{match}:{reasons}"
+                if tag not in seen:
+                    alerts.append(f"🚫 OOD TRAS SYNC: {match} ({reasons})")
+                    seen.add(tag)
+        for match, reasons in prev["ood"].items():
+            if match not in cur["ood"]:
+                tag = f"ood_off:{match}"
+                if tag not in seen:
+                    alerts.append(f"✅ OOD RESUELTO TRAS SYNC: {match} (era {reasons})")
+                    seen.add(tag)
+    return alerts, seen
+
+
 def _notify_local(title: str, body: str) -> None:
     """Notificación del sistema, best-effort y sin dependencias nuevas."""
     try:
@@ -113,14 +183,17 @@ def run_watch(cfg: dict, interval_min: int = 15, max_cycles: int | None = None,
     hist_path = ledger_dir / "price_history.jsonl"
     prev_signals: dict[str, dict] = {}
     prev_odds: dict[str, float] = {}
+    prev_snap: dict | None = None
     alerted: set[str] = set()
     cycle = 0
+    sync_every = max(1, round(360 / max(1, interval_min)))   # sync ~cada 6 h
     print(f"betbot watch — cada {interval_min} min (Ctrl+C para salir). No ejecuta apuestas.")
     while True:
         cycle += 1
         ts = datetime.now(timezone.utc).isoformat()
+        do_sync = (cycle - 1) % sync_every == 0
         try:
-            res = run_scan(cfg, **scan_kwargs)
+            res = run_scan(cfg, sync_results=do_sync, **scan_kwargs)
         except Exception as exc:  # noqa: BLE001
             print(f"[{ts[:16]}] escaneo fallido: {exc} (reintento en {interval_min} min)")
             if max_cycles and cycle >= max_cycles:
@@ -131,6 +204,10 @@ def run_watch(cfg: dict, interval_min: int = 15, max_cycles: int | None = None,
         new_signals = extract_signals(rows)
         crossings = detect_crossings(prev_odds, rows)
         alerts, alerted = diff_alerts(prev_signals, new_signals, crossings, alerted)
+        snap = market_snapshot(rows, res.summary)
+        m_alerts, alerted = market_alerts(prev_snap, snap, alerted, synced=do_sync)
+        alerts.extend(m_alerts)
+        prev_snap = snap
 
         # historial de precios (append-only)
         if rows is not None and len(rows):
@@ -141,8 +218,10 @@ def run_watch(cfg: dict, interval_min: int = 15, max_cycles: int | None = None,
                                          "o_min": None if pd.isna(r["o_min"]) else float(r["o_min"])})
                              + "\n")
         s = res.summary
+        cov = s.get("market_coverage") or {}
+        cov_s = ", ".join(f"{m}:{n}/{s['eligible']}" for m, n in cov.items() if n) or "sin cuotas"
         print(f"[{ts[11:16]}] ciclo {cycle}: {s['eligible']} elegibles · "
-              f"cobertura cuotas {s['odds_coverage_pct']}% · señales activas {len(new_signals)} · "
+              f"cuotas por mercado [{cov_s}] · señales activas {len(new_signals)} · "
               f"alertas nuevas {len(alerts)}")
         for a in alerts:
             print("  " + a + "\a")

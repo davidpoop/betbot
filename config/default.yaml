@@ -16,7 +16,7 @@ feeds:
   calendar_order: [github_te, espn]        # adaptadores sustituibles (orden de prioridad)
   odds_order: [github_te, espn, oddsapi]
   results_order: [sportradar, github]       # fuentes de resultados para sync-results
-  structured_odds_order: [betfair, sportradar_odds]  # mercados de sets (catalogo dinamico)
+  structured_odds_order: [betfair]          # mercados de sets (catalogo dinamico, solo lectura)
   sync_max_days: 30                         # tope de backfill por ciclo de sync
   ttl_seconds: 900                          # caché de red
   odds_api_key: null                        # The Odds API (opcional; o BETBOT_ODDS_API_KEY)

@@ -7,9 +7,22 @@ entrada manual de partidos/cuotas queda como fallback.
 ## Uso normal: descubrimiento automático
 
 ```bash
-betbot scan                 # jornada ATP/WTA main tour + cuotas + señales
+betbot scan                 # sincroniza resultados + jornada + cuotas + señales
 betbot watch                # escaneo continuo cada 15 min con alertas
 ```
+
+`scan` ejecuta primero `sync-results` (desactivable con `--no-sync-results`) y
+muestra SIEMPRE la frescura de resultados por circuito antes del informe:
+
+```
+Frescura resultados: ATP hasta 2026-08-03  ·  WTA hasta 2026-08-03
+Sync resultados: +12 nuevos, 6 duplicados omitidos, 0 en cuarentena
+Cobertura de cuotas por mercado: Moneyline: 56/56;  Primer set: 0/56; ...
+```
+
+La cobertura se informa POR MERCADO: un "100 %" de moneyline nunca se presenta
+como cobertura total. Los mercados que la fuente no publica aparecen como
+`not_offered`; los suspendidos y los partidos no enlazados se listan aparte.
 
 `scan` descubre los partidos elegibles (excluye Challenger/ITF/dobles/qualies/
 equipos), obtiene las cuotas disponibles de las fuentes configuradas, resuelve
@@ -36,11 +49,73 @@ moneyline, actualizado cada 6 h; sin superficie/ronda: se estima con aviso);
 `espn` — scoreboard JSON público (calendario 48 h y cuotas cuando las publica;
 bloqueado en el entorno de desarrollo, operativo en máquinas normales);
 `oddsapi` — The Odds API oficial con tu clave gratuita en `BETBOT_ODDS_API_KEY`
-(multioperador, Slams/1000/500). Si una fuente cae, el escaneo continúa con las
-demás y lo refleja. Los mercados de sets solo se evalúan si alguna fuente
-aporta su cuota real (nunca se inventan cuotas). `watch` alerta de señales
-nuevas, cruces de `o_min` y señales desaparecidas, sin repetir alertas, y
-guarda el historial de precios en el ledger.
+(multioperador, Slams/1000/500; solo moneyline en tenis). Si una fuente cae, el
+escaneo continúa con las demás y lo refleja. Los mercados de sets solo se
+evalúan si alguna fuente aporta su cuota real (nunca se inventan cuotas).
+`watch` alerta de: señal nueva (moneyline o sets), cruce de `o_min`, señal
+desaparecida, partido con cuota en un mercado nuevo, cambio de mejor fuente,
+mercado suspendido y cambio de estado OOD tras un sync — sin repetir alertas
+sin cambio material; sincroniza resultados cada ~6 h.
+
+## Sincronización automática de resultados
+
+```bash
+betbot sync-results               # incremental desde la última fecha local
+betbot sync-results --days 60     # backfill forzado de N días (rellena huecos)
+```
+
+Fuentes (orden en `config feeds.results_order`): **sportradar** (API oficial;
+requiere `SPORTRADAR_API_KEY`, plan trial gratuito) y **github** (sin
+credenciales): resultados ATP con marcador por sets actualizados a DIARIO
+(espejo del proyecto TML) y WTA main tour completos con cadencia SEMANAL
+(lunes) — es decir, la WTA puede acumular hasta 7 días de retraso entre
+semanas. Garantías: append-only con dedupe (exacto por `match_id` y
+casi-duplicados con fecha desplazada ±2 días con mismo ganador y sets),
+resultados futuros rechazados (`dato_futuro`), debutantes sin ambigüedad dados
+de alta automáticamente, nombres dudosos a cuarentena con sugerencias, y una
+segunda ejecución no duplica partidos ni altera el Elo. Si una fuente falla,
+se conserva el último estado válido y la frescura real se muestra en cada scan;
+cuando nuestros datos van >14 días por detrás del partido, la falta de
+historial se marca `data_freshness_unknown` (aviso), nunca como falso OOD.
+
+## Mercados de sets con fuente estructurada (Betfair, solo lectura)
+
+No existe (verificado el 2026-08-04) ningún feed público gratuito que publique
+cuotas de mercados de sets. El proveedor integrado y testeado es **Betfair
+Exchange** (el único exchange legal en España), en modo ESTRICTAMENTE lectura:
+solo `listEvents`, `listMarketCatalogue` y `listMarketBook` — el módulo no
+contiene ninguna ruta de saldo ni de colocación/modificación/cancelación de
+apuestas (garantizado por test). Para activarlo solo necesitas:
+
+```bash
+export BETFAIR_APP_KEY="..."      # App Key del panel developer.betfair.com
+export BETFAIR_USERNAME="..."     # tu usuario de betfair.es
+export BETFAIR_PASSWORD="..."
+```
+
+La **Delayed App Key es gratuita** (precios con retardo del exchange, válidos
+para prepartido); la Live App Key es de pago. El catálogo de mercados se
+consulta EN VIVO por evento (sin lista cerrada de marketType) y se mapea
+dinámicamente: `MATCH_ODDS→match_winner`, `SET_WINNER (set 1)→set1_winner`,
+`PLAYER_X_WIN_A_SET Yes→wins_set(x)` / `No→straight_sets(rival)`,
+`SET_BETTING "X 2-0"→straight_sets(x)`, `NUMBER_OF_SETS 3→three_sets(yes)`.
+Se conserva TODO el metadato del precio (ids, tipo crudo, runner, mejor back
+disponible con tamaño, timestamp, estado open/suspended) en
+`artifacts/ledger/structured_prices.jsonl`; mercados ausentes del catálogo →
+`not_offered`; suspendidos no se cotizan. `three_sets` mantiene su aviso
+permanente de calibración y nunca puede ser señal fuerte.
+
+## Estado y prueba de fuentes
+
+```bash
+betbot feeds status     # orden configurado y presencia de credenciales (nunca el valor)
+betbot feeds test       # petición real de lectura a cada fuente activa
+betbot feeds markets    # catálogo REAL de mercados por evento (proveedores estructurados)
+```
+
+Las claves se leen EXCLUSIVAMENTE de variables de entorno (`SPORTRADAR_API_KEY`,
+`BETFAIR_APP_KEY`, `BETFAIR_USERNAME`, `BETFAIR_PASSWORD`, `BETBOT_ODDS_API_KEY`)
+y jamás se guardan en ficheros, logs ni ledger.
 
 ## Instalación de doble clic (recomendada)
 
@@ -201,7 +276,9 @@ También disponible en la interfaz (barra lateral → *Importar resultados recie
 ## Comandos adicionales (CLI)
 
 ```bash
-betbot import-results --file recent_results.csv   # resultados manuales (ver arriba)
+betbot sync-results [--days N] [--no-refresh]     # sincronización de resultados (ver arriba)
+betbot feeds status|test|markets                  # estado real de las fuentes
+betbot import-results --file recent_results.csv   # resultados manuales (fallback)
 betbot update-data          # actualización incremental con salvaguardas explícitas
 betbot paper list|close|settle|metrics    # paper trading desde consola
 betbot monitor              # días, estados, descartes y calibración prospectiva

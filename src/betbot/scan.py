@@ -75,6 +75,7 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
              show_rejected: bool = False, export: str | None = None,
              calendar_sources: list[CalendarSource] | None = None,
              odds_sources: list[OddsSource] | None = None,
+             structured_providers: list | None = None,
              log_ledger: bool = True, sync_results: bool = False) -> ScanResult:
     if calendar_sources is None or odds_sources is None:
         d_cal, d_odds = default_sources(cfg)
@@ -134,6 +135,48 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
             qs, st = [], SourceStatus(name=getattr(src, "name", "?"), ok=False, error=str(exc))
         statuses.append(st)
         quotes.extend(qs)
+
+    # ---------- 3b. proveedores estructurados (mercados de sets, solo lectura) ----------
+    from betbot.feeds.structured_odds import QUOTABLE, to_odds_quotes
+    if structured_providers is None:
+        from betbot.feeds.manage import default_structured_providers
+        structured_providers = default_structured_providers(cfg)
+    struct_prices = []
+    structured_info: dict = {"active": False, "providers": [], "events": []}
+    for prov in structured_providers:
+        if not prov.active():
+            statuses.append(SourceStatus(
+                name=getattr(prov, "name", "?"), ok=False,
+                error="inactivo: faltan credenciales (ver betbot feeds status)"))
+            continue
+        structured_info["active"] = True
+        try:
+            prices, st = prov.fetch_prices(eligible)
+        except Exception as exc:  # noqa: BLE001
+            prices, st = [], SourceStatus(name=getattr(prov, "name", "?"),
+                                          ok=False, error=str(exc))
+        statuses.append(st)
+        struct_prices.extend(prices)
+        structured_info["providers"].append(st.name)
+    if struct_prices:
+        for row in to_odds_quotes(struct_prices):
+            quotes.append(OddsQuote(**row))
+        by_ev: dict[tuple, dict] = {}
+        for p in struct_prices:
+            d = by_ev.setdefault((p.player_a, p.player_b),
+                                 {"offered": set(), "suspended": set(), "in_play": False})
+            if p.market_canonical in QUOTABLE:
+                d["offered"].add(p.market_canonical)
+                if p.status == "suspended":
+                    d["suspended"].add(p.market_canonical)
+            d["in_play"] = d["in_play"] or p.in_play
+        structured_info["events"] = [
+            {"match": f"{k[0]} vs {k[1]}", "offered": sorted(v["offered"]),
+             "not_offered": [m for m in QUOTABLE if m not in v["offered"]],
+             "suspended": sorted(v["suspended"]), "in_play": v["in_play"]}
+            for k, v in by_ev.items()]
+        if log_ledger:
+            _log_structured_prices(cfg, struct_prices)
 
     # ---------- 4. screener (modelos congelados; ledger completo) ----------
     day_matches: list[DayMatch] = []
@@ -215,6 +258,7 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
         "states": state_counts,
         "results_freshness": results_freshness,
         "sync": sync_report,
+        "structured": structured_info,
         "sources": [{"name": s.name, "ok": s.ok, "n": s.n_items, "error": s.error,
                      "data_timestamp": s.data_timestamp, "notes": s.notes} for s in statuses],
         "warnings": warns,
@@ -223,6 +267,19 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
         disp.to_csv(export, index=False)
         summary["export"] = export
     return ScanResult(summary=summary, rows=out, displayed=disp, statuses=statuses)
+
+
+def _log_structured_prices(cfg: dict, prices: list) -> None:
+    """Metadatos completos de cada precio estructurado al ledger (append-only)."""
+    import json
+    from dataclasses import asdict
+
+    from betbot.config import resolve_path
+    ldir = resolve_path(cfg, "ledger_dir")
+    ldir.mkdir(parents=True, exist_ok=True)
+    with open(ldir / "structured_prices.jsonl", "a", encoding="utf-8") as fh:
+        for p in prices:
+            fh.write(json.dumps(asdict(p), ensure_ascii=False, default=str) + "\n")
 
 
 def _odds_age_minutes(out: pd.DataFrame, quotes: list[OddsQuote]) -> pd.Series:
@@ -300,6 +357,27 @@ def render_report(res: ScanResult, show_likely: bool = False) -> str:
     stale = s.get("stale_discarded", 0)
     lines.append(f"Mercados evaluados: {s['markets_evaluated']}"
                  + (f"  ·  descartados por cuota caducada: {stale}" if stale else ""))
+    struct = s.get("structured") or {}
+    if struct.get("active"):
+        evs = struct.get("events", [])
+        lines.append(f"Fuente estructurada ({', '.join(struct.get('providers', []) or ['-'])}): "
+                     f"{len(evs)} eventos enlazados")
+        miss: dict[str, int] = {}
+        for e in evs:
+            for m in e["not_offered"]:
+                miss[m] = miss.get(m, 0) + 1
+        if miss and evs:
+            lines.append("  not_offered: " + ";  ".join(
+                f"{_MARKET_LABELS.get(m, m)}: {n}/{len(evs)}" for m, n in sorted(miss.items())))
+        for e in evs:
+            if e.get("suspended"):
+                lines.append(f"  SUSPENDIDO: {e['match']} — "
+                             f"{', '.join(_MARKET_LABELS.get(m, m) for m in e['suspended'])}")
+            if e.get("in_play"):
+                lines.append(f"  EN JUEGO (excluido del análisis pre-partido): {e['match']}")
+    elif struct and not struct.get("active"):
+        lines.append("Fuente estructurada de mercados de sets: INACTIVA "
+                     "(sin credenciales; ver `betbot feeds status`)")
     st = s["states"]
     lines.append(f"Fuertes: {st.get('fuerte', 0)}  Normales: {st.get('normal', 0)}  "
                  f"Experimentales: {st.get('experimental', 0)}  Vigilar: {st.get('vigilar_precio', 0)}  "

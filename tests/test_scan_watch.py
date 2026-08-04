@@ -150,7 +150,7 @@ def test_scan_source_failure_resilience(cfg_tmp):
                                            _q("Alcaraz C.", "Draper J.", "b", 2.4)])])
     s = res.summary
     assert s["eligible"] == 1 and s["matches_with_odds"] == 1
-    fails = [x for x in s["sources"] if not x["ok"]]
+    fails = [x for x in s["sources"] if not x["ok"] and x["name"] in ("fake_cal", "fake_odds")]
     assert len(fails) == 2                     # ambas caídas registradas, escaneo continúa
 
 

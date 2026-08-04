@@ -165,7 +165,15 @@ def _near_duplicate_mask(df: pd.DataFrame, canon: Path, since: date,
         existing = load_matches(canon)
     except FileNotFoundError:
         return pd.Series(False, index=df.index)
-    lo, hi = since - timedelta(days=3), until + timedelta(days=3)
+    # la ventana de comparación se ancla a las FECHAS DE LAS FILAS candidatas
+    # (no a la ventana del sync): un partido almacenado justo antes de `since`
+    # también puede ser el mismo partido con la fecha desplazada
+    row_dates = pd.to_datetime(df["date"], errors="coerce").dropna()
+    if len(row_dates):
+        lo = row_dates.min().date() - timedelta(days=3)
+        hi = row_dates.max().date() + timedelta(days=3)
+    else:
+        lo, hi = since - timedelta(days=3), until + timedelta(days=3)
     win = existing[(existing["date"] >= lo) & (existing["date"] <= hi)]
     by_pair: dict[tuple, list[tuple]] = {}
     for _, r in win.iterrows():
