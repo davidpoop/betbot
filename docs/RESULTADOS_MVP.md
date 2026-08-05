@@ -150,6 +150,48 @@ denunciado es real y está corregido — BetBot no podía saberlo, y de hecho le
 asignaba una fecha inventada — pero conviene dejar constancia de que en ese
 caso concreto el partido aún no se había jugado.
 
+## Calendarios de respaldo sin credenciales (2026-08-05)
+
+ESPN sigue siendo la primera opción. Como respaldo se integraron dos fuentes
+que no exigen cuenta, pago, login ni sortear bloqueos:
+
+| Fuente | Circuitos | Clave | Da id / hora / estado | Papel |
+|---|---|---|---|---|
+| `espn` | ATP + WTA | ninguna | sí / sí / sí | principal |
+| `thesportsdb` | ATP + WTA | valor público de su documentación | sí / sí / sí (sin normalizar) | respaldo |
+| `wta_official` | solo WTA | ninguna | sí / sí / solo F,P,U fiables | complemento |
+| `sportradar` | ATP + WTA | `SPORTRADAR_API_KEY` | sí / sí / enum cerrado | opcional |
+
+Ambos respaldos son conservadores por diseño: un estado que no se puede leer
+con certeza se devuelve como `unknown` y la puerta prepartido lo excluye
+(`estado_desconocido`), igual que un partido sin fecha-hora completa
+(`sin_hora_de_inicio`). En `wta_official` solo se aceptan los tres códigos de
+`MatchState` confirmados de forma independiente (F/P/U); C/S/D/I/L tienen
+evidencia contradictoria entre implementaciones reales y se tratan como
+desconocidos.
+
+**Descartado tras evaluarlo:** el gateway `app.atptour.com` no publica hora de
+inicio por partido (`matchTimeStamp` vacío), está tras Cloudflare (sortearlo
+sería evasión de un control de acceso) y los términos de la ATP limitan el uso
+a personal y no comercial.
+
+**Verificación en vivo pendiente del usuario.** El contenedor de desarrollo
+bloquea en el CONNECT del proxy todos los dominios de terceros —ESPN,
+TheSportsDB y api.wtatennis.com incluidos—, antes del handshake TLS, así que
+aquí NO es posible una prueba con red doméstica: `betbot feeds calendar`
+devuelve FAIL_CLOSED con las tres fuentes en FALLO por 403 del proxy. La
+comprobación en una máquina con salida normal es un solo comando:
+
+```bash
+betbot feeds calendar --hours 48     # y después: betbot scan
+```
+
+Lo que sí está verificado aquí: el parseo de cada fuente contra payloads con su
+esquema real de campos, el mapeo de estados, el descarte de dobles/TBD/sin
+hora, la deduplicación entre calendarios con jugadores en orden invertido, el
+relevo del respaldo cuando ESPN cae (0 → 1 partido confirmado, con fuente,
+estado y hora en el informe) y el FAIL_CLOSED cuando fallan todos.
+
 ## Tests
 
 156 tests automatizados en verde (+1 saltado sin GUI), de los cuales 34 son la

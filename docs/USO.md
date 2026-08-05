@@ -56,10 +56,29 @@ el almacén local de resultados no lo contradice (`already_completed`).
   trae fecha, ni zona horaria, ni estado por partido. Sigue siendo fuente de
   cuotas moneyline, pero sus precios solo se asocian a eventos ya confirmados;
   los que no encuentran evento quedan como `orphan_quote` y no se analizan.
-- **Calendarios autoritativos**: `espn` (scoreboard JSON público, sin
-  credencial — el que funciona en tu Mac por defecto) y `sportradar` (contrato
-  formal Tennis v3 con enum de estado cerrado; se activa con
-  `SPORTRADAR_API_KEY`, nivel trial gratuito).
+- **Calendarios autoritativos**, en orden (`config feeds.calendar_order`):
+  1. `espn` — scoreboard JSON público, sin credencial. Cubre ATP y WTA. Primera opción.
+  2. `thesportsdb` — API REST pública y **documentada** (`/free_sports_api`), ATP
+     y WTA. Su clave gratuita es un valor público fijo que aparece en la propia
+     documentación (`"3"`, en `feeds.thesportsdb_key`): no hay alta, ni cuenta,
+     ni secreto que guardar, por eso va en la config y no en el entorno.
+     Su base la alimenta la comunidad, así que sus listados diarios pueden venir
+     incompletos: es respaldo, nunca fuente única.
+  3. `wta_official` — `api.wtatennis.com`, la API de primera parte que alimenta
+     la web de la WTA. Sin clave de ningún tipo. **Solo WTA.** De su campo
+     `MatchState` solo se aceptan los tres códigos confirmados (F/P/U); el resto
+     se trata como desconocido y la puerta lo excluye.
+  4. `sportradar` — opcional, solo si defines `SPORTRADAR_API_KEY`.
+
+  Ninguna de las tres primeras requiere cuenta, pago, login ni sortear bloqueos.
+  Si prefieres cero claves de cualquier clase, borra `thesportsdb` de
+  `calendar_order`: quedarás con ESPN (ATP+WTA) y la WTA oficial, y el ATP
+  dependerá solo de ESPN.
+
+  **Descartado a propósito:** el gateway de `app.atptour.com` no publica hora de
+  inicio por partido (`matchTimeStamp` llega vacío), está tras Cloudflare —
+  sortearlo sería evasión de un control de acceso — y los términos de la ATP
+  limitan el uso a personal y no comercial.
 - **Si ninguna responde**, el escaneo termina con
   `FAIL_CLOSED: calendario prepartido no verificable; 0 señales generadas`.
   Cero señales es preferible a recomendar un partido ya jugado.
@@ -142,9 +161,16 @@ permanente de calibración y nunca puede ser señal fuerte.
 
 ```bash
 betbot feeds status     # orden configurado y presencia de credenciales (nunca el valor)
+betbot feeds calendar   # prueba EN VIVO los calendarios y lista los partidos confirmados
 betbot feeds test       # petición real de lectura a cada fuente activa
 betbot feeds markets    # catálogo REAL de mercados por evento (proveedores estructurados)
 ```
+
+`betbot feeds calendar` es la comprobación que conviene hacer al estrenar el
+sistema en tu máquina: pide la jornada a cada calendario, aplica la puerta
+prepartido y te enseña, por fuente, cuántos partidos confirma y una muestra con
+hora de inicio, estado, jugadores e identificador — más el total combinado tras
+deduplicar. Si todas fallan, imprime el mismo `FAIL_CLOSED` que emitiría `scan`.
 
 Las claves se leen EXCLUSIVAMENTE de variables de entorno (`SPORTRADAR_API_KEY`,
 `BETFAIR_APP_KEY`, `BETFAIR_USERNAME`, `BETFAIR_PASSWORD`, `BETBOT_ODDS_API_KEY`)

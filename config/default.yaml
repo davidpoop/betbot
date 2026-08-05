@@ -15,7 +15,11 @@ rankings:
 feeds:
   # SOLO fuentes AUTORITATIVAS (con estado + hora de inicio + id de evento) pueden
   # crear un partido elegible. github_te NO lo es: queda solo como fuente de cuotas.
-  calendar_order: [espn, sportradar]   # espn sin credencial; sportradar con SPORTRADAR_API_KEY
+  # Orden de calendarios AUTORITATIVOS (primero ESPN; el resto, respaldo).
+  # espn, thesportsdb y wta_official NO necesitan cuenta ni clave privada.
+  # sportradar solo se activa si existe SPORTRADAR_API_KEY (opcional).
+  calendar_order: [espn, thesportsdb, wta_official, sportradar]
+  thesportsdb_key: "3"              # clave PÚBLICA de su documentación (sin alta ni secreto)
   odds_order: [github_te, espn, oddsapi]
   prematch_margin_minutes: 5        # margen de seguridad antes del comienzo
   calendar_status_max_age_hours: 6  # estado de calendario mas viejo -> no se analiza

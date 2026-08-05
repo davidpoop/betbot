@@ -51,12 +51,18 @@ def default_sources(cfg: dict) -> tuple[list[CalendarSource], list[OddsSource]]:
     from betbot.feeds.github_te import GithubTEFeed
     from betbot.feeds.oddsapi import OddsApiFeed
     from betbot.feeds.results import SportradarResults
+    from betbot.feeds.thesportsdb import TheSportsDBCalendar
+    from betbot.feeds.wta_official import WtaOfficialCalendar
     fcfg = cfg.get("feeds", {})
     ttl = int(fcfg.get("ttl_seconds", 900))
     te = GithubTEFeed(ttl_seconds=ttl)
     es = EspnFeed(ttl_seconds=ttl)
     oa = OddsApiFeed(api_key=fcfg.get("odds_api_key"), ttl_seconds=ttl)
-    cal_map = {"espn": es, "sportradar": SportradarResults(ttl_seconds=ttl)}
+    cal_map = {"espn": es,
+               "thesportsdb": TheSportsDBCalendar(api_key=fcfg.get("thesportsdb_key"),
+                                                  ttl_seconds=ttl),
+               "wta_official": WtaOfficialCalendar(ttl_seconds=ttl),
+               "sportradar": SportradarResults(ttl_seconds=ttl)}
     odds_map = {"github_te": te, "espn": es, "oddsapi": oa}
     cals = [cal_map[n] for n in fcfg.get("calendar_order", ["espn"]) if n in cal_map]
     odds = [odds_map[n] for n in fcfg.get("odds_order", ["github_te", "espn", "oddsapi"])

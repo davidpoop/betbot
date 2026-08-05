@@ -86,6 +86,72 @@ def feeds_test(cfg: dict) -> dict:
     return report
 
 
+def feeds_calendar(cfg: dict, hours: int = 48) -> str:
+    """Prueba EN VIVO de cada calendario autoritativo y demostración de que se
+    encuentran partidos PREPARTIDO confirmados. Pensado para ejecutarse en una
+    conexión doméstica normal: imprime, por fuente, si respondió, cuántos
+    partidos trae, cuántos superan la puerta prepartido y una muestra con hora
+    de inicio, estado y jugadores."""
+    from datetime import datetime, timezone
+
+    from betbot.prematch import FAIL_CLOSED_MSG, gate
+    from betbot.scan import default_sources
+    now = datetime.now(timezone.utc)
+    cals, _ = default_sources(cfg)
+    lines = [f"Comprobación de calendarios prepartido — {now.isoformat(timespec='seconds')}",
+             f"Ventana: {hours} h", ""]
+    total_ok = 0
+    all_matches = []
+    for src in cals:
+        name = getattr(src, "name", "?")
+        if not getattr(src, "authoritative", False):
+            lines.append(f"[{name}] IGNORADA como calendario: no es autoritativa")
+            continue
+        try:
+            ms, st = src.fetch_matches(hours)
+        except Exception as exc:  # noqa: BLE001
+            ms, st = [], SourceStatus(name=name, ok=False, error=str(exc))
+        if not st.ok:
+            lines.append(f"[{name}] FALLO — {st.error or 'sin detalle'}")
+            lines.append("")
+            continue
+        total_ok += 1
+        all_matches.extend(ms)
+        res = gate(ms, cfg, window_hours=hours, now=now)
+        lines.append(f"[{name}] OK — {len(ms)} partidos en ventana · "
+                     f"{len(res.eligible)} CONFIRMADOS prepartido")
+        for note in st.notes:
+            lines.append(f"    nota: {note}")
+        for m in res.eligible[:5]:
+            mins = int((m.scheduled_at_utc - now).total_seconds() // 60)
+            lines.append(f"    ✓ {m.tour} {m.tournament}: {m.player1} vs {m.player2}")
+            lines.append(f"        inicio {m.scheduled_at_utc.isoformat()} (en {mins} min) · "
+                         f"estado {m.status} · id {m.event_id}")
+        counts = res.counts()
+        if counts:
+            lines.append("    excluidos: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+        lines.append("")
+    if total_ok == 0:
+        lines.append(FAIL_CLOSED_MSG)
+        lines.append("Ninguna fuente autoritativa respondió: `betbot scan` no analizaría nada.")
+        return "\n".join(lines)
+    from betbot.feeds.base import dedupe_matches
+    merged = dedupe_matches(all_matches)
+    final = gate(merged, cfg, window_hours=hours, now=now)
+    lines.append(f"COMBINADO (tras deduplicar entre fuentes): {len(merged)} partidos · "
+                 f"{len(final.eligible)} confirmados prepartido")
+    by_tour: dict[str, int] = {}
+    for m in final.eligible:
+        by_tour[m.tour] = by_tour.get(m.tour, 0) + 1
+    if by_tour:
+        lines.append("  por circuito: " + ", ".join(f"{k}={v}" for k, v in sorted(by_tour.items())))
+        lines.append("  -> `betbot scan` analizaría estos partidos.")
+    else:
+        lines.append("  -> 0 confirmados: `betbot scan` no emitiría señales (correcto si no "
+                     "hay jornada en la ventana).")
+    return "\n".join(lines)
+
+
 def feeds_markets(cfg: dict, hours: int = 48) -> dict:
     """Catálogo REAL de mercados por evento en los proveedores estructurados
     (consulta dinámica; sin lista cerrada de marketType)."""

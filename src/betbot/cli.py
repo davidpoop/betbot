@@ -157,6 +157,15 @@ def feeds_test_cmd(cfg: dict) -> None:
     click.echo(json.dumps(feeds_test(cfg), indent=2, ensure_ascii=False, default=str))
 
 
+@feeds_group.command("calendar")
+@click.option("--hours", type=int, default=48, show_default=True)
+@click.pass_obj
+def feeds_calendar_cmd(cfg: dict, hours: int) -> None:
+    """Prueba EN VIVO los calendarios y muestra los partidos prepartido confirmados."""
+    from betbot.feeds.manage import feeds_calendar
+    click.echo(feeds_calendar(cfg, hours=hours))
+
+
 @feeds_group.command("markets")
 @click.option("--hours", type=int, default=48, show_default=True)
 @click.pass_obj
