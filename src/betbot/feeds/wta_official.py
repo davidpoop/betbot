@@ -16,6 +16,21 @@ Cautelas aplicadas:
   (C/S/D/I/L, sobre los que hay evidencia CONTRADICTORIA entre
   implementaciones) se devuelve como `unknown` y la puerta prepartido lo
   excluye. Preferimos perder un partido a apostar sobre un estado mal leído.
+- **`MatchTimeStamp` puede ser un PLACEHOLDER de fin de día local.** Caso real
+  (2026-08-05): Jović–Linette y Samsonova–Krejcikova llegaron con
+  `2026-08-06T03:59:00Z` = 23:59 de Toronto, cuando sus horas reales eran
+  18:00Z y 21:00Z del día anterior. Tomada como hora real, esa marca sitúa el
+  partido HASTA 10 H MÁS TARDE de lo que empieza, así que un encuentro ya
+  comenzado seguiría pareciendo prepartido. Esas horas se marcan
+  `time_precision="date_only"` y la puerta las rechaza.
+- **`NotBeforeISOTime` es una cota inferior, no un inicio.** "Not before 14:00"
+  significa "no antes de", no "a las". Se conserva como metadato y NUNCA
+  confirma una hora.
+- **El marcador manda sobre el estado.** Si los campos crudos traen sets,
+  ganador o duración, el partido se marca `completed` aunque `MatchState` diga
+  U.
+- La fuente es `schedule_only`: publica un código de estado sin evidencia de
+  juego verificable, así que la puerta le exige corroboración adicional.
 - Solo cubre WTA: es complemento de ESPN/TheSportsDB, no sustituto.
 - Es un endpoint sin contrato publicado: puede cambiar sin aviso. Se consume
   con caché, ritmo bajo y User-Agent identificable.
@@ -25,14 +40,18 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from betbot.feeds import cache
-from betbot.feeds.base import FeedMatch, SourceStatus, classify_level, strip_seed
+from betbot.feeds.base import (FeedMatch, SourceStatus, classify_level,
+                               evidence_of_play, mark_placeholder_times, strip_seed)
 from betbot.schemas import OddsQuote
 
 URL = "https://api.wtatennis.com/tennis/matches/global"
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; betbot/0.1; herramienta local)",
            "Accept": "application/json"}
 
-# Solo los tres códigos confirmados de forma independiente; el resto -> unknown
+# Solo los tres códigos confirmados de forma independiente; el resto -> unknown.
+# Distribución observada sobre 25.952 partidos reales: F=25591, U=316, P=42,
+# C=2, W=1 (C y W con duración 00:00:00 y marcador vacío: evidencia insuficiente
+# para mapearlos, así que se quedan en `unknown` y la puerta los excluye).
 MATCH_STATE = {"F": "completed", "P": "live", "U": "scheduled"}
 
 
@@ -46,6 +65,11 @@ def _player_name(first: str, last: str) -> str:
     if not last:
         return ""
     return f"{last} {first[:1]}." if first else last
+
+
+def _truthy(v) -> bool:
+    """Booleano tolerante: la fuente mezcla true/'true'/1/'1'."""
+    return str(v).strip().lower() in ("true", "1", "yes", "y")
 
 
 def _parse_iso(raw) -> datetime | None:
@@ -121,11 +145,15 @@ class WtaOfficialCalendar:
             if not p1 or not p2:
                 n_skipped += 1
                 continue
-            start = _parse_iso(r.get("MatchTimeStamp")) or _parse_iso(r.get("NotBeforeISOTime"))
-            if start is None:
+            # `MatchTimeStamp` es la única candidata a hora real; NotBefore es una
+            # COTA INFERIOR ("no antes de") y nunca confirma un inicio.
+            start = _parse_iso(r.get("MatchTimeStamp"))
+            not_before = _parse_iso(r.get("NotBeforeISOTime"))
+            ref = start or not_before
+            if ref is None:
                 n_skipped += 1
-                continue                                  # sin hora completa no entra
-            if lo and hi and not (lo <= start <= hi):
+                continue                                  # sin ninguna referencia temporal
+            if lo and hi and not (lo <= ref <= hi):
                 n_skipped += 1
                 continue
             tournament = str(r.get("TournamentName") or r.get("EventTitle")
@@ -136,16 +164,47 @@ class WtaOfficialCalendar:
             level = classify_level(tournament)
             if str(r.get("DrawLevelType", "")).strip().upper() in ("I", "ITF"):
                 level = "itf"
+
+            # el marcador se impone al código de estado
+            status = normalize_match_state(r.get("MatchState"))
+            played, why = evidence_of_play(r)
+            if played and status not in ("completed", "walkover"):
+                status = "completed"
+
+            precision, note = "exact", ""
+            # la propia fuente declara cuándo la hora no es firme
+            if _truthy(r.get("Unscheduled")):
+                precision = "date_only"
+                note = "la fuente marca el partido como Unscheduled (sin horario asignado)"
+            elif _truthy(r.get("isEstimatedStartTime")):
+                precision = "date_only"
+                note = "la fuente marca isEstimatedStartTime: la hora es una estimación"
+            if start is None:
+                precision = "unknown"
+                note = (f"solo hay NotBeforeISOTime ({not_before.isoformat()}), que es una "
+                        f"cota inferior, no una hora de inicio")
+            if played:
+                note = (note + "; " if note else "") + \
+                    "evidencia de partido jugado: " + ", ".join(why)
+
+            # identidad ESTABLE: torneo + año + hueco del cuadro + pareja.
+            # Sin la fecha: un cambio de horario NO puede crear un evento nuevo
+            # que eluda la reconciliación con resultados.
+            ev = str(r.get("EventID", "") or "")
+            yr = str(r.get("EventYear", "") or (ref.year if ref else ""))
+            mid = str(r.get("MatchID", "") or "")
             out.append(FeedMatch(
-                date=start.date(), tour="WTA", tournament=tournament,
+                date=ref.date(), tour="WTA", tournament=tournament,
                 player1=p1, player2=p2, level=level, is_doubles=False,
                 is_qualifying="q" in rnd.lower() and "qual" in rnd.lower(),
                 round=rnd, best_of=3, surface=None, source="wta_official",
-                event_id=f"wta:{r.get('MatchID', '')}:{start:%Y%m%d}:{a}__{b}",
-                scheduled_at_utc=start,
-                status=normalize_match_state(r.get("MatchState")),
+                event_id=f"wta:{ev}:{yr}:{mid}:{a}__{b}",
+                scheduled_at_utc=start, status=status,
                 source_updated_at=observed_at, start_tz="UTC",
-                authoritative=True))
+                authoritative=True, time_precision=precision, time_note=note,
+                trust_tier="schedule_only", raw=dict(r)))
+        # la detección de horas provisionales necesita ver el lote entero
+        mark_placeholder_times(out)
         return out, n_raw, n_skipped
 
     def fetch_odds(self, matches: list[FeedMatch]) -> tuple[list[OddsQuote], SourceStatus]:

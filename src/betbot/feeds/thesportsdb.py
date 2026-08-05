@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 
 from betbot.feeds import cache
 from betbot.feeds.base import (FeedMatch, SourceStatus, classify_level, is_grand_slam,
-                               strip_seed)
+                               mark_placeholder_times, strip_seed)
 from betbot.schemas import OddsQuote
 
 BASE = "https://www.thesportsdb.com/api/v1/json/{key}/eventsday.php?d={day}&s=Tennis"
@@ -175,11 +175,12 @@ class TheSportsDBCalendar:
                 best_of=5 if (tour == "ATP" and is_grand_slam(tournament)) else 3,
                 surface=None,
                 source="thesportsdb",
-                event_id=f"tsdb:{ev.get('idEvent', '')}:{start:%Y%m%d}:{a}__{b}",
+                event_id=f"tsdb:{ev.get('idEvent', '')}:{a}__{b}",
                 scheduled_at_utc=start,
                 status=normalize_sportsdb_status(ev.get("strStatus")),
                 source_updated_at=observed_at, start_tz="UTC",
-                authoritative=True))
+                authoritative=True, trust_tier="schedule_only", raw=dict(ev)))
+        mark_placeholder_times(out)
         return out, n_raw, n_skipped
 
     def fetch_odds(self, matches: list[FeedMatch]) -> tuple[list[OddsQuote], SourceStatus]:

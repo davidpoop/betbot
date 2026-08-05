@@ -51,7 +51,7 @@ from datetime import datetime, timedelta, timezone
 
 from betbot.feeds import cache
 from betbot.feeds.base import (FeedMatch, SourceStatus, classify_level, is_grand_slam,
-                               normalize_status, strip_seed)
+                               mark_placeholder_times, normalize_status, strip_seed)
 from betbot.schemas import OddsQuote
 
 BASE = "https://site.api.espn.com/apis/site/v2/sports/tennis/{league}/scoreboard"
@@ -193,6 +193,7 @@ class EspnFeed:
                 fm = cls._parse_competition(comp, tid, tournament, tour, observed_at)
                 if fm is not None and not any(x.pair_key == fm.pair_key for x in out):
                     out.append(fm)
+        mark_placeholder_times(out)
         return out, n_raw, n_oow
 
     @classmethod
@@ -216,10 +217,10 @@ class EspnFeed:
         except (TypeError, ValueError):
             best_of = None
         p1, p2 = _short_name(n1), _short_name(n2)
-        # id ESTABLE: el id de competición de ESPN cambia entre peticiones
+        # id ESTABLE: ni el id de competición de ESPN (cambia entre peticiones)
+        # ni la fecha (un cambio de horario no puede crear un evento nuevo)
         from betbot.canonical.names import canonical_key
         a, b = sorted([canonical_key(p1), canonical_key(p2)])
-        day = start.strftime("%Y%m%d") if start else "sinfecha"
         return FeedMatch(
             date=(start.date() if start else datetime.now(timezone.utc).date()),
             tour=tour, tournament=tournament,
@@ -231,10 +232,13 @@ class EspnFeed:
             best_of=best_of or (5 if (tour == "ATP" and is_grand_slam(tournament)) else 3),
             surface=None,                     # ESPN no publica superficie
             source="espn",
-            event_id=f"espn:{tid}:{day}:{a}__{b}",
+            event_id=f"espn:{tid}:{a}__{b}",
             scheduled_at_utc=start, status=status,
             source_updated_at=observed_at, start_tz="UTC",
-            authoritative=True)
+            authoritative=True,
+            # ESPN publica linescores y `completed`: su estado es verificable
+            trust_tier="live_verified",
+            raw={"status": comp.get("status"), "round": comp.get("round")})
 
     def fetch_odds(self, matches: list[FeedMatch]) -> tuple[list[OddsQuote], SourceStatus]:
         """ESPN no publica cuotas en tenis (verificado sobre respuesta real);

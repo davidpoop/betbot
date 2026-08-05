@@ -88,6 +88,48 @@ Cada señal muestra su trazabilidad: `Inicio confirmado`, `Estado`,
 partidos confirmados, los de estado no verificable, los ya completados, los
 live excluidos y las `orphan_quotes`.
 
+### Puertas adicionales sobre la hora de inicio
+
+Un calendario puede publicar una hora que NO es una hora. Caso real
+(2026-08-05): la WTA devolvió `2026-08-06T03:59:00Z` para dos partidos de
+Toronto — las 23:59 locales, es decir "tengo la fecha, no el horario" — cuando
+sus horas reales eran 18:00Z y 21:00Z del día anterior. Tomada al pie de la
+letra, esa marca sitúa el partido hasta 10 h más tarde de lo que empieza, así
+que un encuentro ya en juego seguiría pareciendo prepartido. Ahora:
+
+- **Hora provisional** (`hora_provisional`): se detectan las marcas terminadas
+  en `:59`/`:58`, la medianoche UTC exacta y cualquier hora idéntica compartida
+  por tres o más partidos (pistas distintas no empiezan al mismo segundo). Esas
+  horas quedan como `date_only` y **nunca** se etiquetan «Inicio confirmado».
+- **Contraste independiente** (`conflicto_de_fuentes`): la hora se compara con
+  el `commence_time` de The Odds API — vía su API si tienes clave, o vía dos
+  espejos públicos en GitHub que la republican sin credencial. Si discrepan más
+  de 90 min, o si la hora independiente ya pasó, o si el índice cubre el torneo
+  pero ya no lista el partido, se excluye. Se conservan el `event_id` y el
+  `commence_time` originales.
+- **El marcador manda** (`evidencia_de_resultado`): si los campos crudos traen
+  sets, ganador o duración, el partido se marca jugado aunque el estado diga
+  "por jugar". La detección recorre todos los campos, no una lista fija.
+- **Resultados desactualizados**
+  (`results_feed_stale_pre_match_unverified`): una fuente que publica un código
+  de estado sin evidencia de juego (`schedule_only`, como la WTA o TheSportsDB)
+  no basta si los resultados locales no llegan al día en curso y ninguna hora
+  independiente lo corrobora. ESPN, que publica marcador y `completed`, no
+  queda afectada.
+- **Identidad estable**: el `event_id` ya NO incluye la fecha
+  (`wta:{EventID}:{año}:{MatchID}:{pareja}`), así que un cambio de horario no
+  puede crear un evento nuevo que eluda la reconciliación con resultados.
+
+Para auditar un partido concreto:
+
+```bash
+betbot feeds wta-raw --match-id LS052 --match-id LS061
+```
+
+vuelca todos sus campos crudos, dice si la hora es provisional y si hay
+evidencia de que ya se jugó, y guarda un snapshot anonimizado en
+`artifacts/exports/wta_raw_snapshot.json`.
+
 `watch` revalida estado y hora en cada ciclo: retira la señal en cuanto el
 partido empieza, se completa, se cancela o se aplaza, y congela la última
 observación prepartido en `artifacts/ledger/prematch_frozen.jsonl`.

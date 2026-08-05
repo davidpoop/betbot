@@ -135,10 +135,23 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
     if n_authoritative_ok == 0:
         return _fail_closed_result(cfg, hours, statuses, results_freshness, sync_report)
 
-    # ---------- 2. puerta PREPARTIDO (estado + hora + resultados locales) ----------
+    # ---------- 2. puerta PREPARTIDO (estado + hora + contraste independiente) ----------
     from betbot.prematch import gate
     registry = _player_registry(cfg)
-    gres = gate(found, cfg, window_hours=hours, now=now, tours=tours, registry=registry)
+    commence_idx = None
+    if cfg.get("feeds", {}).get("commence_crosscheck", True):
+        try:
+            from betbot.feeds.commence import build_index
+            commence_idx = build_index(cfg, registry=registry)
+            for s in commence_idx.sources_ok:
+                statuses.append(SourceStatus(name=f"commence:{s.split(' ')[0]}", ok=True,
+                                             notes=[s]))
+            for s in commence_idx.sources_failed:
+                statuses.append(SourceStatus(name="commence", ok=False, error=s))
+        except Exception as exc:  # noqa: BLE001 - el contraste nunca detiene el escaneo
+            statuses.append(SourceStatus(name="commence", ok=False, error=str(exc)))
+    gres = gate(found, cfg, window_hours=hours, now=now, tours=tours, registry=registry,
+                commence_idx=commence_idx)
     eligible = gres.eligible
     gate_counts = gres.counts()
     excluded = {
@@ -315,7 +328,10 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
             r: [f"{m.label} [{m.tour} · {m.tournament}"
                 + (f" · {m.status}" if m.status != "unknown" else " · sin estado")
                 + (f" · inicio {m.scheduled_at_utc.isoformat()}" if m.scheduled_at_utc else "")
-                + f" · fuente {m.source}]" for m in ms[:5]]
+                + f" · fuente {m.source}]"
+                + (f"\n          {gres.details[m.pair_key]}"
+                   if gres.details.get(m.pair_key) else "")
+                for m in ms[:5]]
             for r, ms in gres.excluded.items() if ms and r != "no_main_tour"},
         "orphan_quotes": n_orphan_quotes,
         "confirmations": {f"{k[1]}__{k[2]}": v for k, v in gres.confirmations.items()},
@@ -416,10 +432,15 @@ _MARKET_LABELS = {"match_winner": "Moneyline", "set1_winner": "Primer set",
 _EXCL_LABELS = {
     "fuente_no_autoritativa": "fuente sin estado verificable",
     "sin_hora_de_inicio": "sin hora de inicio",
+    "hora_provisional": "HORA PROVISIONAL (la fuente no tiene horario asignado)",
     "estado_desconocido": "estado no verificable",
     "estado_no_prepartido": "no prepartido (live/terminado/cancelado)",
     "estado_calendario_caducado": "estado de calendario caducado",
-    "ya_comenzado": "ya comenzado",
+    "evidencia_de_resultado": "YA JUGADO (marcador/ganador en los datos crudos)",
+    "conflicto_de_fuentes": "CONFLICTO DE FUENTES (el calendario y la hora independiente no cuadran)",
+    "results_feed_stale_pre_match_unverified":
+        "RESULTADOS DESACTUALIZADOS (no se puede verificar que siga por jugar)",
+    "ya_comenzado": "YA COMENZADO",
     "fuera_de_ventana": "fuera de la ventana",
     "already_completed": "ya completados (resultado local)",
     "no_main_tour": "fuera de main tour",
@@ -473,8 +494,10 @@ def render_report(res: ScanResult, show_likely: bool = False) -> str:
                  f"itf {s['excluded']['itf']}, otros {s['excluded']['other'] + s['excluded']['qualifying']})")
     excl = s.get("prematch_excluded") or {}
     samples = s.get("prematch_excluded_samples") or {}
-    for reason in ("estado_no_prepartido", "already_completed", "ya_comenzado",
-                   "estado_desconocido", "sin_hora_de_inicio", "fuente_no_autoritativa",
+    for reason in ("evidencia_de_resultado", "estado_no_prepartido", "already_completed",
+                   "ya_comenzado", "hora_provisional", "conflicto_de_fuentes",
+                   "results_feed_stale_pre_match_unverified", "estado_desconocido",
+                   "sin_hora_de_inicio", "fuente_no_autoritativa",
                    "estado_calendario_caducado", "fuera_de_ventana"):
         n = excl.get(reason, 0)
         if not n:

@@ -115,6 +115,7 @@ def test_dedupe_matches_prefers_first_source():
 def cfg_tmp(tmp_path):
     cfg = copy.deepcopy(load_config())
     cfg["paths"]["ledger_dir"] = str(tmp_path / "ledger")
+    cfg.setdefault("feeds", {})["commence_crosscheck"] = False
     return cfg
 
 

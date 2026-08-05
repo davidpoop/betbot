@@ -17,15 +17,19 @@ from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 
-from betbot.feeds.base import PREMATCH_STATES, FeedMatch
+from betbot.feeds.base import PREMATCH_STATES, FeedMatch, evidence_of_play
 
 # Motivos de exclusión (códigos estables; se registran en el ledger)
 EXCLUSION_REASONS = (
     "fuente_no_autoritativa",     # la fuente no confirma estado ni hora
     "sin_hora_de_inicio",         # sin scheduled_at_utc utilizable
+    "hora_provisional",           # la hora es un placeholder (fin de día local)
     "estado_no_prepartido",       # live/completed/cancelled/postponed/walkover
     "estado_desconocido",         # la fuente no declara estado
     "estado_calendario_caducado", # la observación del estado es demasiado vieja
+    "evidencia_de_resultado",     # los campos crudos delatan que ya se jugó
+    "conflicto_de_fuentes",       # calendario y hora independiente discrepan
+    "results_feed_stale_pre_match_unverified",  # sin resultados frescos ni fuente live
     "ya_comenzado",               # la hora de inicio ya pasó (con margen)
     "fuera_de_ventana",           # empieza más tarde que la ventana pedida
     "already_completed",          # el almacén local ya tiene su resultado
@@ -39,9 +43,13 @@ class GateResult:
     excluded: dict[str, list[FeedMatch]] = field(default_factory=dict)
     # trazabilidad por partido elegible: qué fuente lo confirmó y cuándo
     confirmations: dict[tuple, dict] = field(default_factory=dict)
+    # detalle legible por partido excluido (hora provisional, conflicto, etc.)
+    details: dict[tuple, str] = field(default_factory=dict)
 
-    def add(self, reason: str, m: FeedMatch) -> None:
+    def add(self, reason: str, m: FeedMatch, detail: str = "") -> None:
         self.excluded.setdefault(reason, []).append(m)
+        if detail:
+            self.details[m.pair_key] = detail
 
     def counts(self) -> dict[str, int]:
         return {r: len(v) for r, v in sorted(self.excluded.items()) if v}
@@ -102,18 +110,36 @@ def find_completed(m: FeedMatch, idx: dict[tuple, list[dict]],
 # puerta principal
 # ---------------------------------------------------------------------------
 
+def results_freshness(cfg: dict) -> dict:
+    """Hasta qué día tenemos resultados por circuito."""
+    try:
+        from betbot.sync import local_freshness
+        return local_freshness(cfg)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
          now: datetime | None = None, tours: list[str] | None = None,
-         completed_idx: dict | None = None, registry: set | None = None) -> GateResult:
-    """Clasifica los partidos del calendario en elegibles + excluidos con motivo."""
+         completed_idx: dict | None = None, registry: set | None = None,
+         commence_idx=None, fresh_until: dict | None = None) -> GateResult:
+    """Clasifica los partidos del calendario en elegibles + excluidos con motivo.
+
+    Orden deliberado: primero lo que descalifica de forma absoluta (no es main
+    tour, fuente no autoritativa), después la evidencia de que YA se jugó, luego
+    la calidad de la hora, y por último los contrastes con fuentes externas.
+    """
     now = now or datetime.now(timezone.utc)
     fcfg = cfg.get("feeds", {})
     margin = timedelta(minutes=float(fcfg.get("prematch_margin_minutes", 5)))
     max_status_age = float(fcfg.get("calendar_status_max_age_hours", 6.0))
+    tol = float(fcfg.get("commence_tolerance_minutes", 90.0))
     horizon = now + timedelta(hours=window_hours)
     res = GateResult()
     if completed_idx is None:
         completed_idx = completed_index(cfg, around=now.date())
+    if fresh_until is None:
+        fresh_until = results_freshness(cfg)
 
     for m in matches:
         if m.is_doubles or m.is_qualifying or m.level != "main" \
@@ -123,39 +149,86 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
         if not m.authoritative:
             res.add("fuente_no_autoritativa", m)
             continue
+
+        # ---- evidencia de que ya se jugó: manda sobre cualquier código de estado ----
+        played, why = evidence_of_play(m.raw)
+        if played:
+            res.add("evidencia_de_resultado", m,
+                    f"los campos crudos delatan juego: {', '.join(why)}")
+            continue
+
         if m.status == "unknown":
-            res.add("estado_desconocido", m)
+            res.add("estado_desconocido", m, m.time_note)
             continue
         if m.status not in PREMATCH_STATES:
-            res.add("estado_no_prepartido", m)
+            res.add("estado_no_prepartido", m, f"estado={m.status}")
             continue
+
+        # ---- calidad de la hora ----
         if m.scheduled_at_utc is None:
             # una hora suelta sin fecha NO convierte un partido en futuro
-            res.add("sin_hora_de_inicio", m)
+            res.add("sin_hora_de_inicio", m, m.time_note)
+            continue
+        if m.time_precision != "exact":
+            res.add("hora_provisional", m,
+                    m.time_note or f"precisión de hora = {m.time_precision}")
             continue
         start = m.scheduled_at_utc
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
         age = m.status_age_hours(now)
         if age is not None and age > max_status_age:
-            res.add("estado_calendario_caducado", m)
+            res.add("estado_calendario_caducado", m, f"observado hace {age:.1f} h")
             continue
+
+        # ---- contraste con la hora independiente (The Odds API / espejos) ----
+        xcheck = None
+        if commence_idx is not None:
+            from betbot.feeds.commence import cross_check
+            xcheck = cross_check(m.pair_key[1:], start, commence_idx, now,
+                                 tolerance_minutes=tol, tournament_hint=m.tournament)
+            if xcheck["verdict"] == "ya_comenzado":
+                res.add("ya_comenzado", m, xcheck["detail"])
+                continue
+            if xcheck["verdict"] in ("conflicto_horario", "ausente"):
+                res.add("conflicto_de_fuentes", m, xcheck["detail"])
+                continue
+
         if start <= now + margin:
-            res.add("ya_comenzado", m)
+            res.add("ya_comenzado", m, f"inicio {start.isoformat()} ya pasado")
             continue
         if start > horizon:
             res.add("fuera_de_ventana", m)
             continue
         done = find_completed(m, completed_idx, registry)
         if done is not None:
-            res.add("already_completed", m)
+            res.add("already_completed", m,
+                    f"resultado local del {done['date']} ({done['status']})")
             continue
+
+        # ---- una fuente sin evidencia de juego exige resultados frescos ----
+        if m.trust_tier != "live_verified":
+            f = fresh_until.get(m.tour)
+            corroborated = bool(xcheck and xcheck["verdict"] == "coincide")
+            if not corroborated and (f is None or f < now.date()):
+                res.add("results_feed_stale_pre_match_unverified", m,
+                        (f"fuente '{m.source}' publica estado sin evidencia de juego y "
+                         f"los resultados {m.tour} solo llegan hasta "
+                         f"{f or 'ninguna fecha'} (< {now.date()}); sin hora "
+                         f"independiente que lo corrobore no se puede afirmar prepartido"))
+                continue
+
         res.eligible.append(m)
         res.confirmations[m.pair_key] = {
             "source": m.source, "event_id": m.event_id, "status": m.status,
             "start_utc": start.isoformat(), "start_local": m.start_local,
             "start_tz": m.start_tz, "source_updated_at": m.source_updated_at,
             "status_age_h": round(age, 2) if age is not None else None,
+            "time_precision": m.time_precision, "trust_tier": m.trust_tier,
+            "commence_check": (xcheck or {}).get("verdict", "sin_datos"),
+            "commence_utc": (xcheck or {}).get("commence_utc"),
+            "commence_event_id": (xcheck or {}).get("event_id"),
+            "commence_source": (xcheck or {}).get("source"),
         }
     return res
 

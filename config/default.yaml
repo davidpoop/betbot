@@ -29,6 +29,10 @@ feeds:
   odds_order: [github_te, espn, oddsapi]
   prematch_margin_minutes: 5        # margen de seguridad antes del comienzo
   calendar_status_max_age_hours: 6  # estado de calendario mas viejo -> no se analiza
+  # contraste de la hora de inicio con fuentes independientes (The Odds API y
+  # sus espejos publicos). Sin el, una hora placeholder podria colarse.
+  commence_crosscheck: true
+  commence_tolerance_minutes: 90    # discrepancia mayor -> conflicto_de_fuentes
   results_order: [sportradar, github]       # fuentes de resultados para sync-results
   structured_odds_order: [betfair]          # mercados de sets (catalogo dinamico, solo lectura)
   sync_max_days: 30                         # tope de backfill por ciclo de sync

@@ -44,6 +44,8 @@ def _fm(p1, p2, *, tour="ATP", status="scheduled", start=None, authoritative=Tru
 def cfg(tmp_path):
     c = copy.deepcopy(load_config())
     c["paths"]["ledger_dir"] = str(tmp_path / "ledger")
+    # tests deterministas: el contraste con fuentes externas se prueba aparte
+    c.setdefault("feeds", {})["commence_crosscheck"] = False
     return c
 
 
@@ -385,7 +387,7 @@ def test_espn_parses_real_payload_schema():
     assert m.status == "completed" and m.best_of == 3
     assert m.round == "Quarterfinal" and m.is_doubles is False
     assert m.tournament == "Roland Garros" and m.authoritative is True
-    assert m.event_id.startswith("espn:172-2026:20260603:")
+    assert m.event_id == "espn:172-2026:chwalinska_m__kalinskaya_a"  # estable, sin fecha
     # los dobles del mismo torneo NO entran en el cuadro individual
     assert all("/" not in x.player1 and "/" not in x.player2 for x in ms)
 

@@ -16,6 +16,8 @@ from betbot.feeds.wta_official import WtaOfficialCalendar, normalize_match_state
 from betbot.prematch import gate
 
 NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+# resultados al dia: desactiva la puerta de frescura salvo donde se pruebe
+FRESH_OK = {"ATP": NOW.date(), "WTA": NOW.date()}
 NOW_ISO = NOW.isoformat()
 LO, HI = NOW - timedelta(days=1), NOW + timedelta(hours=48)
 
@@ -24,6 +26,8 @@ LO, HI = NOW - timedelta(days=1), NOW + timedelta(hours=48)
 def cfg(tmp_path):
     c = copy.deepcopy(load_config())
     c["paths"]["ledger_dir"] = str(tmp_path / "ledger")
+    # tests deterministas: el contraste con fuentes externas se prueba aparte
+    c.setdefault("feeds", {})["commence_crosscheck"] = False
     return c
 
 
@@ -48,7 +52,7 @@ def test_tsdb_parses_id_time_status_players():
     assert m.tour == "ATP" and m.status == "scheduled"
     assert m.scheduled_at_utc == datetime(2026, 8, 5, 17, 0, tzinfo=timezone.utc)
     assert {m.player1, m.player2} == {"Alcaraz C.", "Draper J."}
-    assert m.event_id.startswith("tsdb:2100001:20260805:")
+    assert m.event_id == "tsdb:2100001:alcaraz_c__draper_j"  # estable, sin fecha
     assert m.round == "Round of 32"
 
 
@@ -87,7 +91,7 @@ def test_tsdb_status_normalisation_and_unknown_is_fail_closed(cfg):
     assert normalize_sportsdb_status("") == "unknown"
     out, _, _ = TheSportsDBCalendar.parse_day(
         {"events": [_tsdb_event(strStatus="algo raro")]}, NOW_ISO, LO, HI)
-    res = gate(out, cfg, now=NOW, completed_idx={})
+    res = gate(out, cfg, now=NOW, completed_idx={}, fresh_until=FRESH_OK)
     assert res.eligible == [] and res.counts()["estado_desconocido"] == 1
 
 
@@ -95,7 +99,7 @@ def test_tsdb_finished_and_live_never_eligible(cfg):
     for status in ("Match Finished", "In Progress", "Cancelled", "Postponed"):
         out, _, _ = TheSportsDBCalendar.parse_day(
             {"events": [_tsdb_event(strStatus=status)]}, NOW_ISO, LO, HI)
-        assert gate(out, cfg, now=NOW, completed_idx={}).eligible == []
+        assert gate(out, cfg, now=NOW, completed_idx={}, fresh_until=FRESH_OK).eligible == []
 
 
 def test_tsdb_doubles_excluded():
@@ -141,7 +145,7 @@ def test_wta_parses_id_time_status_players():
     assert m.status == "scheduled"
     assert m.scheduled_at_utc == datetime(2026, 8, 5, 18, 30, tzinfo=timezone.utc)
     assert {m.player1, m.player2} == {"Swiatek I.", "Gauff C."}
-    assert m.event_id.startswith("wta:55021:20260805:")
+    assert m.event_id == "wta:901:2026:55021:gauff_c__swiatek_i"  # estable, sin fecha
 
 
 def test_wta_response_may_be_list_or_wrapped():
@@ -162,14 +166,14 @@ def test_wta_match_state_only_trusts_confirmed_codes(cfg):
         assert normalize_match_state(code) == "unknown"
         out, _, _ = WtaOfficialCalendar.parse_matches(
             [_wta_match(MatchState=code)], NOW_ISO, LO, HI)
-        assert gate(out, cfg, now=NOW, completed_idx={}).eligible == []
+        assert gate(out, cfg, now=NOW, completed_idx={}, fresh_until=FRESH_OK).eligible == []
 
 
 def test_wta_finished_and_live_never_eligible(cfg):
     for code in ("F", "P"):
         out, _, _ = WtaOfficialCalendar.parse_matches(
             [_wta_match(MatchState=code)], NOW_ISO, LO, HI)
-        assert gate(out, cfg, now=NOW, completed_idx={}).eligible == []
+        assert gate(out, cfg, now=NOW, completed_idx={}, fresh_until=FRESH_OK).eligible == []
 
 
 def test_wta_skips_tbd_and_doubles():
@@ -178,13 +182,18 @@ def test_wta_skips_tbd_and_doubles():
     assert out == [] and skipped == 2
 
 
-def test_wta_not_before_time_used_as_fallback():
+def test_wta_not_before_time_never_confirms(cfg):
+    """'Not before 19:00' es una COTA INFERIOR, no un inicio: no puede
+    confirmar hora ni producir una señal."""
     out, _, _ = WtaOfficialCalendar.parse_matches(
         [_wta_match(MatchTimeStamp="", NotBeforeISOTime="2026-08-05T19:00:00Z")],
         NOW_ISO, LO, HI)
     assert len(out) == 1
-    assert out[0].scheduled_at_utc == datetime(2026, 8, 5, 19, 0, tzinfo=timezone.utc)
-    # sin ninguna de las dos horas, el partido no entra
+    m = out[0]
+    assert m.scheduled_at_utc is None and m.time_precision == "unknown"
+    assert "cota inferior" in m.time_note
+    assert gate([m], cfg, now=NOW, completed_idx={}).eligible == []
+    # sin ninguna de las dos horas, el partido no entra siquiera
     out2, _, skipped = WtaOfficialCalendar.parse_matches(
         [_wta_match(MatchTimeStamp="", NotBeforeISOTime="")], NOW_ISO, LO, HI)
     assert out2 == [] and skipped == 1
@@ -212,14 +221,18 @@ def test_sources_dedupe_across_calendars(cfg):
                                 strAwayTeam="Carlos Alcaraz")]}, NOW_ISO, LO, HI)
     merged = dedupe_matches(tsdb + otro)
     assert len(merged) == 1
-    res = gate(merged, cfg, now=NOW, completed_idx={})
+    res = gate(merged, cfg, now=NOW, completed_idx={}, fresh_until=FRESH_OK)
     assert len(res.eligible) == 1
 
 
-def test_fallback_takes_over_when_espn_fails(cfg):
-    """Con ESPN caído, un respaldo sano evita el FAIL_CLOSED y confirma partidos."""
+def test_fallback_takes_over_when_espn_fails(cfg, monkeypatch):
+    """Con ESPN caído, un respaldo sano evita el FAIL_CLOSED y confirma partidos
+    — siempre que los resultados esten al dia (si no, ver el test siguiente)."""
     from betbot.feeds.base import SourceStatus
     from betbot.scan import run_scan
+    monkeypatch.setattr("betbot.prematch.results_freshness",
+                        lambda cfg: {"ATP": datetime.now(timezone.utc).date(),
+                                     "WTA": datetime.now(timezone.utc).date()})
 
     class DeadEspn:
         name = "espn"
@@ -235,8 +248,8 @@ def test_fallback_takes_over_when_espn_fails(cfg):
         def fetch_matches(self, window_hours):
             ms, _, _ = TheSportsDBCalendar.parse_day(
                 {"events": [_tsdb_event(
-                    strTimestamp=(datetime.now(timezone.utc)
-                                  + timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%S"))]},
+                    strTimestamp=(datetime.now(timezone.utc) + timedelta(hours=5))
+                    .replace(minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S"))]},
                 datetime.now(timezone.utc).isoformat(),
                 datetime.now(timezone.utc) - timedelta(days=1),
                 datetime.now(timezone.utc) + timedelta(hours=48))
@@ -249,7 +262,25 @@ def test_fallback_takes_over_when_espn_fails(cfg):
     assert res.summary["calendar_confirmed"] == 1
     conf = list(res.summary["confirmations"].values())[0]
     assert conf["source"] == "thesportsdb" and conf["status"] == "scheduled"
-    assert conf["start_utc"]
+    assert conf["start_utc"] and conf["time_precision"] == "exact"
+
+
+def test_schedule_only_source_blocked_when_results_are_stale(cfg, monkeypatch):
+    """Una fuente que publica estado SIN evidencia de juego no basta si los
+    resultados locales no llegan al dia en curso: no se puede saber si el
+    partido ya se jugo."""
+    monkeypatch.setattr("betbot.prematch.results_freshness",
+                        lambda cfg: {"WTA": NOW.date() - timedelta(days=2)})
+    out, _, _ = TheSportsDBCalendar.parse_day(
+        {"events": [_tsdb_event(strLeague="WTA Tour",
+                                strHomeTeam="Iga Swiatek", strAwayTeam="Coco Gauff")]},
+        NOW_ISO, LO, HI)
+    assert out and out[0].trust_tier == "schedule_only"
+    res = gate(out, cfg, now=NOW, completed_idx={})
+    assert res.eligible == []
+    assert res.counts()["results_feed_stale_pre_match_unverified"] == 1
+    detalle = list(res.details.values())[0]
+    assert "sin evidencia de juego" in detalle and "2026-08-03" in detalle
 
 
 def test_fail_closed_still_applies_when_all_calendars_fail(cfg):

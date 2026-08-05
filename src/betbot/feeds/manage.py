@@ -152,6 +152,79 @@ def feeds_calendar(cfg: dict, hours: int = 48) -> str:
     return "\n".join(lines)
 
 
+def feeds_wta_raw(cfg: dict, match_ids: tuple = (), limit: int = 5) -> str:
+    """Vuelca los campos CRUDOS de `api.wtatennis.com` y guarda un snapshot
+    anonimizado, para auditar por qué un partido se consideró prepartido."""
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from betbot.config import resolve_path
+    from betbot.feeds import cache
+    from betbot.feeds.base import evidence_of_play, is_placeholder_time
+    from betbot.feeds.wta_official import URL, HEADERS, WtaOfficialCalendar
+    now = datetime.now(timezone.utc)
+    L = [f"Volcado crudo de api.wtatennis.com — {now.isoformat(timespec='seconds')}"]
+    try:
+        data = cache.get_json(URL, ttl_seconds=0, headers=HEADERS)
+    except Exception as exc:  # noqa: BLE001
+        L.append(f"FALLO: {exc}")
+        return "\n".join(L)
+    rows = data
+    if isinstance(data, dict):
+        for k in ("Matches", "matches", "data"):
+            if isinstance(data.get(k), list):
+                rows = data[k]
+                break
+    rows = rows if isinstance(rows, list) else []
+    L.append(f"{len(rows)} filas recibidas")
+    wanted = {str(x).upper() for x in match_ids}
+    sel = [r for r in rows if isinstance(r, dict)
+           and (not wanted or str(r.get("MatchID", "")).upper() in wanted)][:limit or None]
+    L.append(f"{len(sel)} filas seleccionadas" + (f" (MatchID en {sorted(wanted)})" if wanted else ""))
+    # reparto de marcas horarias: delata los placeholders compartidos
+    stamps: dict = {}
+    for r in rows:
+        if isinstance(r, dict):
+            stamps[str(r.get("MatchTimeStamp", ""))] = stamps.get(
+                str(r.get("MatchTimeStamp", "")), 0) + 1
+    rep = sorted(stamps.items(), key=lambda kv: -kv[1])[:5]
+    L.append("Marcas horarias más repetidas: "
+             + ", ".join(f"{k or '(vacía)'} ×{v}" for k, v in rep))
+    for r in sel:
+        L.append("")
+        L.append(f"── MatchID {r.get('MatchID')} ──")
+        for k in sorted(r):
+            L.append(f"    {k}: {r[k]!r}")
+        ts = str(r.get("MatchTimeStamp", ""))
+        parsed = None
+        try:
+            from betbot.feeds.wta_official import _parse_iso
+            parsed = _parse_iso(ts)
+        except Exception:  # noqa: BLE001
+            pass
+        bad, why = is_placeholder_time(parsed, stamps.get(ts, 1))
+        L.append(f"  -> hora provisional: {bad}" + (f" ({why})" if bad else ""))
+        played, ev = evidence_of_play(r)
+        L.append(f"  -> evidencia de partido jugado: {played}"
+                 + (f" ({', '.join(ev)})" if played else ""))
+    # snapshot anonimizado
+    def anon(row, i):
+        out = dict(row)
+        for k in list(out):
+            if "PlayerName" in k or k in ("PlayerIDA", "PlayerIDB"):
+                out[k] = f"<jugador{i}{k[-1]}>"
+        return out
+    snap = [anon(r, i) for i, r in enumerate(sel, 1)]
+    path = Path(resolve_path(cfg, "exports_dir")) / "wta_raw_snapshot.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"captured_at": now.isoformat(), "rows": snap},
+                               indent=2, ensure_ascii=False), encoding="utf-8")
+    L.append("")
+    L.append(f"Snapshot anonimizado: {path}")
+    return "\n".join(L)
+
+
 def feeds_markets(cfg: dict, hours: int = 48) -> dict:
     """Catálogo REAL de mercados por evento en los proveedores estructurados
     (consulta dinámica; sin lista cerrada de marketType)."""

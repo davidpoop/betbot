@@ -166,6 +166,17 @@ def feeds_calendar_cmd(cfg: dict, hours: int) -> None:
     click.echo(feeds_calendar(cfg, hours=hours))
 
 
+@feeds_group.command("wta-raw")
+@click.option("--match-id", "match_ids", multiple=True,
+              help="MatchID concreto a volcar (repetible; p.ej. LS052)")
+@click.option("--limit", type=int, default=5, show_default=True)
+@click.pass_obj
+def feeds_wta_raw_cmd(cfg: dict, match_ids: tuple, limit: int) -> None:
+    """Vuelca los campos CRUDOS de la WTA y audita hora provisional/evidencia."""
+    from betbot.feeds.manage import feeds_wta_raw
+    click.echo(feeds_wta_raw(cfg, match_ids=match_ids, limit=limit))
+
+
 @feeds_group.command("oddsapiio-probe")
 @click.option("--hours", type=int, default=48, show_default=True)
 @click.option("--sample", type=int, default=6, show_default=True,
