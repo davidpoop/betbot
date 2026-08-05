@@ -166,6 +166,23 @@ def feeds_calendar_cmd(cfg: dict, hours: int) -> None:
     click.echo(feeds_calendar(cfg, hours=hours))
 
 
+@feeds_group.command("oddsapiio-probe")
+@click.option("--hours", type=int, default=48, show_default=True)
+@click.option("--sample", type=int, default=6, show_default=True,
+              help="Partidos a los que se piden cuotas (cada uno gasta peticiones)")
+@click.pass_obj
+def oddsapiio_probe_cmd(cfg: dict, hours: int, sample: int) -> None:
+    """Mide la cobertura REAL del plan gratuito de Odds-API.io (no emite señales).
+
+    Requiere ODDS_API_IO_KEY en el entorno. Muestra los mercados crudos por
+    partido y bookmaker, cuáles mapean a contratos de BetBot, qué bookmakers
+    habilita el plan, la contabilidad exacta de peticiones y una política de
+    polling por debajo de 500 peticiones al día.
+    """
+    from betbot.feeds.oddsapiio_probe import run_probe
+    click.echo(run_probe(cfg, hours=hours, sample=sample))
+
+
 @feeds_group.command("markets")
 @click.option("--hours", type=int, default=48, show_default=True)
 @click.pass_obj

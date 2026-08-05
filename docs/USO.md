@@ -162,9 +162,42 @@ permanente de calibración y nunca puede ser señal fuerte.
 ```bash
 betbot feeds status     # orden configurado y presencia de credenciales (nunca el valor)
 betbot feeds calendar   # prueba EN VIVO los calendarios y lista los partidos confirmados
+betbot feeds oddsapiio-probe   # evalúa la cobertura real del plan gratuito de Odds-API.io
 betbot feeds test       # petición real de lectura a cada fuente activa
 betbot feeds markets    # catálogo REAL de mercados por evento (proveedores estructurados)
 ```
+
+## Sondeo de Odds-API.io (evaluación, no integración)
+
+```bash
+export ODDS_API_IO_KEY='tu-clave'          # solo entorno; nunca se escribe en disco
+betbot feeds oddsapiio-probe --hours 48 --sample 6
+```
+
+Mide qué ofrece REALMENTE el plan gratuito para la jornada ATP/WTA actual. **No
+genera señales, no toca el ledger y Odds-API.io no participa todavía en
+`betbot scan`**: es una fuente adicional y sustituible que solo se integrará si
+el sondeo demuestra que aporta mercados de sets con cuota real. Betfair y el
+resto de fuentes siguen intactas.
+
+El informe trae: eventos ATP/WTA en la ventana; la muestra elegida priorizando
+los partidos que el calendario autoritativo ya confirmó como prepartido; los
+**nombres crudos de todos los mercados** por partido y bookmaker con sus
+selecciones y cuotas; el mapeo a los contratos de BetBot (`match_winner`,
+`set1_winner`, `wins_set`, `straight_sets`, `three_sets`, `set_score`); qué
+bookmakers habilita el plan, deducido tanteándolos uno a uno; la contabilidad
+exacta de peticiones consumidas y restantes; y una política de polling por
+debajo de 500 peticiones diarias.
+
+Dos reglas de honestidad: un contrato **solo** se declara soportado si apareció
+en la respuesta con cuota utilizable, y un mercado cuyo nombre encaja pero cuyas
+selecciones lo contradicen se marca `ambiguo` en vez de forzarlo — el caso
+típico es «Correct Score», que puede ser marcador por sets (2-0, 2-1) o por
+juegos del primer set (6-4, 7-5); solo el primero es `set_score`.
+
+Al terminar guarda `artifacts/exports/oddsapiio_probe_fixture.json`: la
+respuesta real anonimizada (jugadores seudonimizados, sin clave ni datos de
+cuenta, conservando mercados y cuotas) para poder escribir tests contra ella.
 
 `betbot feeds calendar` es la comprobación que conviene hacer al estrenar el
 sistema en tu máquina: pide la jornada a cada calendario, aplica la puerta

@@ -20,6 +20,12 @@ feeds:
   # sportradar solo se activa si existe SPORTRADAR_API_KEY (opcional).
   calendar_order: [espn, thesportsdb, wta_official, sportradar]
   thesportsdb_key: "3"              # clave PÚBLICA de su documentación (sin alta ni secreto)
+  # Odds-API.io: SOLO sondeo por ahora (betbot feeds oddsapiio-probe). No es
+  # fuente de cuotas del escaner hasta que el sondeo demuestre cobertura real.
+  # La clave va exclusivamente en la variable de entorno ODDS_API_IO_KEY.
+  oddsapiio:
+    base_url: "https://api.odds-api.io/v3"
+    daily_request_budget: 500
   odds_order: [github_te, espn, oddsapi]
   prematch_margin_minutes: 5        # margen de seguridad antes del comienzo
   calendar_status_max_age_hours: 6  # estado de calendario mas viejo -> no se analiza
