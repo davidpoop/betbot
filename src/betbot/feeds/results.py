@@ -23,7 +23,36 @@ from typing import Protocol
 import pandas as pd
 
 from betbot.feeds import cache
-from betbot.feeds.base import SourceStatus, classify_level, is_grand_slam, strip_seed
+from betbot.feeds.base import (FeedMatch, SourceStatus, classify_level, is_grand_slam,
+                               strip_seed)
+
+# Enums CERRADOS del contrato OpenAPI "Tennis v3" de Sportradar
+# (sport_event_status.match_status y .status) -> estados canónicos de BetBot.
+SR_MATCH_STATUS = {
+    "not_started": "scheduled", "match_about_to_start": "scheduled",
+    "start_delayed": "delayed", "postponed": "postponed",
+    "started": "live", "interrupted": "live", "suspended": "live",
+    "1st_set": "live", "2nd_set": "live", "3rd_set": "live",
+    "4th_set": "live", "5th_set": "live",
+    "ended": "completed", "closed": "completed", "retired": "completed",
+    "defaulted": "completed", "walkover": "walkover",
+    "cancelled": "cancelled", "abandoned": "cancelled",
+}
+SR_STATUS = {
+    "not_started": "scheduled", "delayed": "delayed", "postponed": "postponed",
+    "live": "live", "started": "live", "interrupted": "live", "suspended": "live",
+    "ended": "completed", "closed": "completed",
+    "cancelled": "cancelled", "abandoned": "cancelled",
+}
+
+
+def sportradar_status(status_block: dict) -> str:
+    """match_status manda (es más específico); status es el respaldo."""
+    ms = str(status_block.get("match_status") or "").strip().lower()
+    if ms in SR_MATCH_STATUS:
+        return SR_MATCH_STATUS[ms]
+    s = str(status_block.get("status") or "").strip().lower()
+    return SR_STATUS.get(s, "unknown")
 
 
 class ResultsSource(Protocol):
@@ -77,6 +106,91 @@ class SportradarResults:
         st.n_items = len(rows)
         st.error = "; ".join(errors[:3])
         return rows, st
+
+    # ------------------------------------------------------------------
+    # calendario prepartido (mismo endpoint, otra proyección)
+    # ------------------------------------------------------------------
+    authoritative = True
+
+    def fetch_matches(self, window_hours: int = 48) -> tuple[list[FeedMatch], SourceStatus]:
+        """CalendarSource: partidos con id URN estable, hora ISO con offset y
+        estado de enum cerrado. Inactivo sin SPORTRADAR_API_KEY."""
+        now = datetime.now(timezone.utc)
+        st = SourceStatus(name=self.name, ok=False, authoritative=True,
+                          fetched_at=now.isoformat())
+        if not self.key:
+            st.error = "sin SPORTRADAR_API_KEY (adaptador inactivo)"
+            return [], st
+        out: list[FeedMatch] = []
+        errors: list[str] = []
+        lo, hi = now - timedelta(days=1), now + timedelta(hours=window_hours)
+        d, last = now.date(), (now + timedelta(hours=window_hours)).date()
+        while d <= last:
+            url = f"{self.BASE}/schedules/{d.isoformat()}/summaries.json?api_key={self.key}"
+            try:
+                data = cache.get_json(url, ttl_seconds=self.ttl)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{d}: {exc}")
+                d += timedelta(days=1)
+                continue
+            for summ in data.get("summaries", []):
+                fm = self.parse_event(summ, now.isoformat())
+                if fm is None or fm.scheduled_at_utc is None:
+                    continue
+                if lo <= fm.scheduled_at_utc <= hi:
+                    out.append(fm)
+            d += timedelta(days=1)
+        st.ok = not errors or bool(out)
+        st.n_items = len(out)
+        st.error = "; ".join(errors[:3])
+        return out, st
+
+    @staticmethod
+    def parse_event(summ: dict, observed_at: str) -> FeedMatch | None:
+        """summaries[] -> FeedMatch con id URN, hora UTC y estado canónico."""
+        ev = summ.get("sport_event", {}) or {}
+        status_block = summ.get("sport_event_status", {}) or {}
+        ctx = ev.get("sport_event_context", {}) or {}
+        category = str((ctx.get("category") or {}).get("name", "")).upper()
+        if category not in ("ATP", "WTA"):
+            return None
+        comp_name = str((ctx.get("competition") or {}).get("name", ""))
+        competitors = ev.get("competitors", []) or []
+        if len(competitors) != 2:
+            return None
+        is_doubles = any(str(c.get("type", "")).lower() == "double" or
+                         "/" in str(c.get("name", "")) for c in competitors)
+        names = [str(c.get("name", "")) for c in competitors]
+        if not all(names):
+            return None
+        start = None
+        raw = str(ev.get("start_time", ""))
+        if raw:
+            try:
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                start = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                start = None
+        rnd = str((ctx.get("round") or {}).get("name", ""))
+
+        def td_name(n: str) -> str:
+            if "," in n:
+                last, first = [x.strip() for x in n.split(",", 1)]
+                return f"{last} {first[:1]}."
+            return n
+
+        p1, p2 = strip_seed(td_name(names[0])), strip_seed(td_name(names[1]))
+        return FeedMatch(
+            date=(start.date() if start else datetime.now(timezone.utc).date()),
+            tour=category, tournament=comp_name, player1=p1, player2=p2,
+            level=classify_level(comp_name), is_doubles=is_doubles,
+            is_qualifying="qualif" in rnd.lower(),
+            round=rnd,
+            best_of=5 if (category == "ATP" and is_grand_slam(comp_name)) else 3,
+            surface=str((ctx.get("competition") or {}).get("surface") or "").title() or None,
+            source="sportradar", event_id=str(ev.get("id", "")),
+            scheduled_at_utc=start, status=sportradar_status(status_block),
+            source_updated_at=observed_at, start_tz="UTC", authoritative=True)
 
     @staticmethod
     def _parse_summary(summ: dict, d: date) -> dict | None:

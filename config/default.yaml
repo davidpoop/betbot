@@ -13,8 +13,12 @@ rankings:
   max_age_days: 45               # aviso si el ranking cargado es mas viejo
 
 feeds:
-  calendar_order: [github_te, espn]        # adaptadores sustituibles (orden de prioridad)
+  # SOLO fuentes AUTORITATIVAS (con estado + hora de inicio + id de evento) pueden
+  # crear un partido elegible. github_te NO lo es: queda solo como fuente de cuotas.
+  calendar_order: [espn, sportradar]   # espn sin credencial; sportradar con SPORTRADAR_API_KEY
   odds_order: [github_te, espn, oddsapi]
+  prematch_margin_minutes: 5        # margen de seguridad antes del comienzo
+  calendar_status_max_age_hours: 6  # estado de calendario mas viejo -> no se analiza
   results_order: [sportradar, github]       # fuentes de resultados para sync-results
   structured_odds_order: [betfair]          # mercados de sets (catalogo dinamico, solo lectura)
   sync_max_days: 30                         # tope de backfill por ciclo de sync

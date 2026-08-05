@@ -43,11 +43,44 @@ betbot scan --export signals.csv
 betbot watch --interval 30 --no-notify
 ```
 
+## Validación prepartido (fail closed)
+
+BetBot **no genera ninguna señal** salvo que una fuente de calendario
+AUTORITATIVA confirme el partido. Autoritativa significa que publica, por
+partido: identificador, hora de inicio y estado real. Un partido solo es
+elegible si su estado es `scheduled`/`delayed`, su hora de inicio está en el
+futuro (con margen configurable de 5 min), cae dentro de la ventana pedida, y
+el almacén local de resultados no lo contradice (`already_completed`).
+
+- **`github_te` NO es autoritativa** y no puede crear un evento: su JSON no
+  trae fecha, ni zona horaria, ni estado por partido. Sigue siendo fuente de
+  cuotas moneyline, pero sus precios solo se asocian a eventos ya confirmados;
+  los que no encuentran evento quedan como `orphan_quote` y no se analizan.
+- **Calendarios autoritativos**: `espn` (scoreboard JSON público, sin
+  credencial — el que funciona en tu Mac por defecto) y `sportradar` (contrato
+  formal Tennis v3 con enum de estado cerrado; se activa con
+  `SPORTRADAR_API_KEY`, nivel trial gratuito).
+- **Si ninguna responde**, el escaneo termina con
+  `FAIL_CLOSED: calendario prepartido no verificable; 0 señales generadas`.
+  Cero señales es preferible a recomendar un partido ya jugado.
+
+Cada señal muestra su trazabilidad: `Inicio confirmado`, `Estado`,
+`Fuente de calendario` y `Última actualización`. El informe separa además los
+partidos confirmados, los de estado no verificable, los ya completados, los
+live excluidos y las `orphan_quotes`.
+
+`watch` revalida estado y hora en cada ciclo: retira la señal en cuanto el
+partido empieza, se completa, se cancela o se aplaza, y congela la última
+observación prepartido en `artifacts/ledger/prematch_frozen.jsonl`.
+
 **Fuentes automáticas** (adaptadores sustituibles en `config feeds`):
 `github_te` — dataset público republicado en GitHub (partidos de HOY con
 moneyline, actualizado cada 6 h; sin superficie/ronda: se estima con aviso);
-`espn` — scoreboard JSON público (calendario 48 h y cuotas cuando las publica;
-bloqueado en el entorno de desarrollo, operativo en máquinas normales);
+`espn` — scoreboard JSON público: CALENDARIO autoritativo (id, hora ISO en UTC
+y estado). No publica cuotas ni superficie en tenis. En el contenedor de
+desarrollo está bloqueado por la política de red del proxy (falla el CONNECT,
+antes del handshake TLS: ESPN nunca ve la petición), pero funciona en una
+máquina con salida normal a Internet;
 `oddsapi` — The Odds API oficial con tu clave gratuita en `BETBOT_ODDS_API_KEY`
 (multioperador, Slams/1000/500; solo moneyline en tenis). Si una fuente cae, el
 escaneo continúa con las demás y lo refleja. Los mercados de sets solo se

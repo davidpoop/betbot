@@ -2,7 +2,7 @@
 de catálogo, not_offered, metadatos completos del precio, garantía de solo
 lectura de Betfair y e2e de scan con moneyline + un mercado de sets real."""
 import copy
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -130,9 +130,11 @@ def test_betfair_inactive_without_credentials(monkeypatch):
 
 # ---------------- Betfair con fixtures de la API real ----------------
 
-def _fm(p1, p2, tour="ATP", **kw):
-    base = dict(date=TODAY, tour=tour, tournament="Washington", player1=p1,
-                player2=p2, source="fake")
+def _fm(p1, p2, tour="ATP", hours_ahead=6, **kw):
+    start = datetime.now(timezone.utc) + timedelta(hours=hours_ahead)
+    base = dict(date=start.date(), tour=tour, tournament="Washington", player1=p1,
+                player2=p2, source="fake", event_id=f"ev-{p1}", scheduled_at_utc=start,
+                status="scheduled", source_updated_at=NOW_ISO, authoritative=True)
     base.update(kw)
     return FeedMatch(**base)
 
@@ -227,12 +229,14 @@ def test_betfair_fetch_prices_dynamic_mapping_and_orientation(betfair_fixture):
 
 class FakeCalendar:
     name = "fake_cal"
+    authoritative = True
 
     def __init__(self, matches):
         self.matches = matches
 
     def fetch_matches(self, window_hours):
-        return self.matches, SourceStatus(name=self.name, ok=True, n_items=len(self.matches))
+        return self.matches, SourceStatus(name=self.name, ok=True, authoritative=True,
+                                          n_items=len(self.matches))
 
 
 class FakeOdds:

@@ -107,9 +107,62 @@ primer set con cuota real de exchange. **Única pieza que falta: credenciales**
 gratuita). Los endpoints de Betfair están bloqueados por la red del entorno de
 desarrollo, no por el código.
 
+## Corrección crítica — validación prepartido (2026-08-05)
+
+**Causa exacta del fallo.** `github_te` se usaba como fuente de calendario.
+Su JSON publica por fila únicamente `{tournament, time, player1, player2,
+odds1, odds2, tour}` — sin fecha, sin zona horaria, sin estado y sin
+identificador. El adaptador asignaba `date = datetime.now(timezone.utc).date()`
+a TODAS las filas, de modo que cualquier fila del feed se convertía en un
+partido "de hoy" analizable. Fila real que lo destapó:
+
+```json
+{"tournament": "Montreal", "time": "17:00", "player1": "Tsitsipas S.",
+ "player2": "Fonseca J. (22)", "odds1": 2.12, "odds2": 1.71, "tour": "ATP"}
+```
+
+Que un partido ya jugado siga en ese feed no es hipotético: los feeds del
+mismo tipo arrastran partidos empezados (snapshot de las 02:33Z con partidos
+iniciados a las 00:51Z, 01:45Z y 01:49Z del mismo día).
+
+**Corrección.** Solo una fuente AUTORITATIVA (identificador + hora de inicio +
+estado) puede crear un partido elegible; `github_te` queda como fuente de
+cuotas y sus precios sin evento confirmado son `orphan_quote`. Estados
+canónicos: scheduled, delayed, postponed, live, completed, cancelled,
+walkover, unknown; solo los dos primeros son analizables, con la hora de
+inicio en el futuro (margen de 5 min), dentro de ventana, y sin resultado
+local que lo contradiga. Sin calendario autoritativo operativo: FAIL_CLOSED.
+
+**Prueba real (2026-08-05 07:39 UTC).**
+
+| Comprobación | Resultado |
+|---|---|
+| Escaneo real de la jornada | `FAIL_CLOSED: calendario prepartido no verificable; 0 señales generadas` (ESPN bloqueado por la red del contenedor, Sportradar sin clave) |
+| Respuesta REAL de ESPN (Roland Garros, 2 partidos finalizados) + cuotas reales del feed | 2 partidos leídos, **0 confirmados prepartido**, ambos excluidos como `estado_no_prepartido` con su hora e id; 71 cuotas quedaron `orphan_quote` |
+| Partido finalizado presentado como pendiente | ninguno |
+| Señales emitidas sin hora y estado confirmados | ninguna |
+
+**Sobre Tsitsipas–Fonseca en concreto:** tres fuentes independientes
+alcanzables (breakpoint, tennis-odds-mvp y odds_api_today) coinciden al
+segundo en que ese partido empezaba a las **2026-08-05T15:00:00Z**, es decir
+que en el momento de la consulta (07:30Z) todavía era prepartido. El defecto
+denunciado es real y está corregido — BetBot no podía saberlo, y de hecho le
+asignaba una fecha inventada — pero conviene dejar constancia de que en ese
+caso concreto el partido aún no se había jugado.
+
 ## Tests
 
-122 tests automatizados en verde (+1 saltado sin GUI): nombres/marcadores/
+156 tests automatizados en verde (+1 saltado sin GUI), de los cuales 34 son la
+regresión prepartido: `github_te` no puede crear un evento, cuota huérfana,
+completed/live/cancelled/postponed/walkover no analizados, partido de ayer no
+promovido a hoy, margen de seguridad, sin hora de inicio, evento invertido
+entre fuentes, resultado local que contradice al calendario (con extensión de
+iniciales sin coincidencia difusa), FAIL_CLOSED con calendario caído, jornada
+vacía que NO es fallo, retirada de señal en `watch` al comenzar, el caso
+Tsitsipas–Fonseca de punta a punta, y el parseo de una respuesta REAL de ESPN
+(groupings anidados, ISO sin segundos, enum de estado, dobles por roster,
+recorte de fechas en cliente, no duplicar Grand Slams entre atp y wta).
+El resto: nombres/marcadores/
 resolución de identidad, canónico real, Elo golden + anti-leakage, no-vig y
 puente de sets, modelos y simetría exacta, derivados, motor de value,
 settlement + E2E CLI, importación manual, scan/watch, **sync de resultados

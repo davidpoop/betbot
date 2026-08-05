@@ -19,7 +19,9 @@ NOW_ISO = datetime.now(timezone.utc).isoformat()
 
 
 class FakeCalendar:
+    """Calendario AUTORITATIVO de prueba (publica estado + hora de inicio)."""
     name = "fake_cal"
+    authoritative = True
 
     def __init__(self, matches, fail=False):
         self.matches, self.fail = matches, fail
@@ -27,7 +29,8 @@ class FakeCalendar:
     def fetch_matches(self, window_hours):
         if self.fail:
             raise RuntimeError("fuente caida")
-        return self.matches, SourceStatus(name=self.name, ok=True, n_items=len(self.matches))
+        return self.matches, SourceStatus(name=self.name, ok=True, authoritative=True,
+                                          n_items=len(self.matches))
 
 
 class FakeOdds:
@@ -43,9 +46,13 @@ class FakeOdds:
         return self.quotes, SourceStatus(name=self.name, ok=True, n_items=len(self.quotes))
 
 
-def _fm(p1, p2, tour="ATP", **kw):
-    base = dict(date=TODAY, tour=tour, tournament="Montreal", player1=p1, player2=p2,
-                source="fake_cal")
+def _fm(p1, p2, tour="ATP", hours_ahead=6, **kw):
+    """Partido CONFIRMADO prepartido por defecto (estado + hora + fuente autoritativa)."""
+    start = datetime.now(timezone.utc) + timedelta(hours=hours_ahead)
+    base = dict(date=start.date(), tour=tour, tournament="Montreal", player1=p1, player2=p2,
+                source="fake_cal", event_id=f"ev-{p1}-{p2}", scheduled_at_utc=start,
+                status="scheduled", source_updated_at=NOW_ISO, start_tz="UTC",
+                authoritative=True)
     base.update(kw)
     return FeedMatch(**base)
 

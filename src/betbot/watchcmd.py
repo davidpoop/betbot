@@ -2,6 +2,10 @@
 
 - Repite `scan` cada N minutos (15 por defecto); sincroniza resultados en el
   primer ciclo y después cada ~6 h (cadencia real de las fuentes).
+- En CADA ciclo revalida estado y hora de inicio: retira al instante la señal
+  de un partido que empieza, se completa, se cancela o se aplaza, y congela su
+  última observación prepartido en `artifacts/ledger/prematch_frozen.jsonl`.
+  Nunca recomienda un evento en juego. Si el calendario cae: FAIL_CLOSED.
 - Alerta en terminal (y notificación local best-effort) cuando:
   * aparece una señal nueva (fuerte/normal/experimental) — moneyline o sets;
   * una cuota cruza al alza su o_min (una oportunidad "vigilar" se activa);
@@ -90,6 +94,38 @@ def diff_alerts(prev_signals: dict[str, dict], new_signals: dict[str, dict],
                               f"{info['selection_name']} (era {info['state']})")
                 alerted.add(tag)
     return alerts, alerted
+
+
+def prematch_transitions(prev_conf: dict, cur_conf: dict, alerted: set[str],
+                         now: datetime | None = None,
+                         margin_minutes: float = 5.0) -> tuple[list[str], set[str], dict]:
+    """Retirada inmediata de señales cuyo partido deja de ser prepartido.
+
+    Devuelve (alertas, avisadas, congeladas) donde `congeladas` guarda la ÚLTIMA
+    observación prepartido de cada evento retirado, para el registro. Nunca se
+    recomienda un evento en juego: basta con que la hora de inicio haya pasado
+    (con margen) o que el estado deje de ser scheduled/delayed.
+    """
+    from betbot.prematch import signal_still_prematch
+    now = now or datetime.now(timezone.utc)
+    alerts: list[str] = []
+    seen = set(alerted)
+    frozen: dict = {}
+    for key, conf in prev_conf.items():
+        cur = cur_conf.get(key)
+        if cur is not None and signal_still_prematch(cur, now, margin_minutes):
+            continue                      # sigue siendo prepartido: nada que hacer
+        if cur is None and signal_still_prematch(conf, now, margin_minutes):
+            continue                      # desapareció del calendario pero aún no empieza
+        state = (cur or conf).get("status", "?")
+        reason = ("comenzado" if state in ("scheduled", "delayed") else state)
+        tag = f"prematch_off:{key}:{reason}"
+        frozen[key] = dict(conf, frozen_at=now.isoformat(), final_status=state)
+        if tag not in seen:
+            alerts.append(f"⏹ SEÑAL RETIRADA ({reason}): {key.replace('__', ' vs ')} "
+                          f"· inicio {conf.get('start_utc', '?')}")
+            seen.add(tag)
+    return alerts, seen, frozen
 
 
 def market_snapshot(rows: pd.DataFrame, summary: dict) -> dict:
@@ -184,7 +220,9 @@ def run_watch(cfg: dict, interval_min: int = 15, max_cycles: int | None = None,
     prev_signals: dict[str, dict] = {}
     prev_odds: dict[str, float] = {}
     prev_snap: dict | None = None
+    prev_conf: dict = {}
     alerted: set[str] = set()
+    margin = float(cfg.get("feeds", {}).get("prematch_margin_minutes", 5))
     cycle = 0
     sync_every = max(1, round(360 / max(1, interval_min)))   # sync ~cada 6 h
     print(f"betbot watch — cada {interval_min} min (Ctrl+C para salir). No ejecuta apuestas.")
@@ -200,10 +238,29 @@ def run_watch(cfg: dict, interval_min: int = 15, max_cycles: int | None = None,
                 return
             time.sleep(interval_min * 60)
             continue
+        if res.summary.get("fail_closed"):
+            print(f"[{ts[11:16]}] ciclo {cycle}: "
+                  + res.summary.get("fail_closed_message", "FAIL_CLOSED"))
+            prev_signals, prev_odds, prev_snap = {}, {}, None
+            if max_cycles and cycle >= max_cycles:
+                return
+            time.sleep(interval_min * 60)
+            continue
         rows = res.rows
+        # 1º: retirar señales cuyo partido ya no es prepartido (empezó/terminó)
+        cur_conf = res.summary.get("confirmations", {}) or {}
+        t_alerts, alerted, frozen = prematch_transitions(prev_conf, cur_conf, alerted,
+                                                         margin_minutes=margin)
+        if frozen:
+            with open(ledger_dir / "prematch_frozen.jsonl", "a", encoding="utf-8") as fh:
+                for k, v in frozen.items():
+                    fh.write(json.dumps({"ts": ts, "event": k, **v},
+                                        ensure_ascii=False, default=str) + "\n")
+        prev_conf = cur_conf
         new_signals = extract_signals(rows)
         crossings = detect_crossings(prev_odds, rows)
         alerts, alerted = diff_alerts(prev_signals, new_signals, crossings, alerted)
+        alerts = t_alerts + alerts
         snap = market_snapshot(rows, res.summary)
         m_alerts, alerted = market_alerts(prev_snap, snap, alerted, synced=do_sync)
         alerts.extend(m_alerts)

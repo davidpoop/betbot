@@ -45,17 +45,20 @@ def guess_surface(tournament: str, d: date) -> tuple[str, bool]:
 
 
 def default_sources(cfg: dict) -> tuple[list[CalendarSource], list[OddsSource]]:
+    """Calendario: SOLO fuentes autoritativas (estado + hora + id de evento).
+    Cuotas: cualquier fuente, pero sus precios se atan a eventos confirmados."""
     from betbot.feeds.espn import EspnFeed
     from betbot.feeds.github_te import GithubTEFeed
     from betbot.feeds.oddsapi import OddsApiFeed
+    from betbot.feeds.results import SportradarResults
     fcfg = cfg.get("feeds", {})
     ttl = int(fcfg.get("ttl_seconds", 900))
     te = GithubTEFeed(ttl_seconds=ttl)
     es = EspnFeed(ttl_seconds=ttl)
     oa = OddsApiFeed(api_key=fcfg.get("odds_api_key"), ttl_seconds=ttl)
-    cal_map = {"github_te": te, "espn": es}
+    cal_map = {"espn": es, "sportradar": SportradarResults(ttl_seconds=ttl)}
     odds_map = {"github_te": te, "espn": es, "oddsapi": oa}
-    cals = [cal_map[n] for n in fcfg.get("calendar_order", ["github_te", "espn"]) if n in cal_map]
+    cals = [cal_map[n] for n in fcfg.get("calendar_order", ["espn"]) if n in cal_map]
     odds = [odds_map[n] for n in fcfg.get("odds_order", ["github_te", "espn", "oddsapi"])
             if n in odds_map]
     return cals, odds
@@ -100,41 +103,69 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
     except Exception:  # noqa: BLE001
         results_freshness = {}
 
-    # ---------- 1. calendario (tolerante a fallos por fuente) ----------
+    # ---------- 1. calendario: SOLO fuentes autoritativas crean eventos ----------
+    now = datetime.now(timezone.utc)
     found: list[FeedMatch] = []
+    n_authoritative_ok = 0
     for src in calendar_sources:
+        auth = bool(getattr(src, "authoritative", False))
         try:
             ms, st = src.fetch_matches(hours)
         except Exception as exc:  # noqa: BLE001 - una fuente caída no detiene el escaneo
             ms, st = [], SourceStatus(name=getattr(src, "name", "?"), ok=False, error=str(exc))
+        st.authoritative = auth
         statuses.append(st)
+        if not auth:
+            # una fuente sin estado ni hora NO puede aportar eventos al calendario
+            st.notes.append("descartada como calendario: no es autoritativa")
+            continue
+        if st.ok:
+            n_authoritative_ok += 1
         found.extend(ms)
     found = dedupe_matches(found)
 
-    # ---------- 2. elegibilidad ----------
-    excluded = {"doubles": 0, "qualifying": 0, "challenger": 0, "itf": 0, "other": 0, "tour": 0}
-    eligible: list[FeedMatch] = []
-    for m in found:
-        if m.is_doubles:
-            excluded["doubles"] += 1
-        elif m.is_qualifying:
-            excluded["qualifying"] += 1
-        elif m.level != "main":
-            excluded[m.level if m.level in excluded else "other"] += 1
-        elif tours and m.tour not in tours:
-            excluded["tour"] += 1
-        else:
-            eligible.append(m)
+    # FAIL CLOSED: sin ninguna fuente de calendario autoritativa operativa no se
+    # analiza nada. Cero señales es preferible a recomendar un partido terminado.
+    if n_authoritative_ok == 0:
+        return _fail_closed_result(cfg, hours, statuses, results_freshness, sync_report)
 
-    # ---------- 3. cuotas (todas las fuentes; se guardan todas) ----------
+    # ---------- 2. puerta PREPARTIDO (estado + hora + resultados locales) ----------
+    from betbot.prematch import gate
+    registry = _player_registry(cfg)
+    gres = gate(found, cfg, window_hours=hours, now=now, tours=tours, registry=registry)
+    eligible = gres.eligible
+    gate_counts = gres.counts()
+    excluded = {
+        "doubles": sum(1 for m in gres.excluded.get("no_main_tour", []) if m.is_doubles),
+        "qualifying": sum(1 for m in gres.excluded.get("no_main_tour", []) if m.is_qualifying),
+        "challenger": sum(1 for m in gres.excluded.get("no_main_tour", []) if m.level == "challenger"),
+        "itf": sum(1 for m in gres.excluded.get("no_main_tour", []) if m.level == "itf"),
+        "other": sum(1 for m in gres.excluded.get("no_main_tour", [])
+                     if m.level == "other" and not m.is_doubles and not m.is_qualifying),
+        "tour": sum(1 for m in gres.excluded.get("no_main_tour", [])
+                    if tours and m.tour not in tours),
+    }
+
+    # ---------- 3. cuotas: solo se asocian a eventos CONFIRMADOS ----------
     quotes: list[OddsQuote] = []
+    n_orphan_quotes = 0
     for src in odds_sources:
         try:
             qs, st = src.fetch_odds(eligible)
         except Exception as exc:  # noqa: BLE001
             qs, st = [], SourceStatus(name=getattr(src, "name", "?"), ok=False, error=str(exc))
         statuses.append(st)
-        quotes.extend(qs)
+        n_orphan_quotes += int(getattr(st, "n_orphan", 0) or 0)
+        # segunda barrera: aunque una fuente no filtre, aquí solo entran cuotas
+        # cuyo enfrentamiento está confirmado por el calendario
+        confirmed_pairs = {m.pair_key[1:] for m in eligible}
+        for q in qs:
+            probe = FeedMatch(date=now.date(), tour="ATP", tournament="",
+                              player1=q.player_a, player2=q.player_b)
+            if probe.pair_key[1:] in confirmed_pairs:
+                quotes.append(q)
+            else:
+                n_orphan_quotes += 1
 
     # ---------- 3b. proveedores estructurados (mercados de sets, solo lectura) ----------
     from betbot.feeds.structured_odds import QUOTABLE, to_odds_quotes
@@ -182,10 +213,12 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
     day_matches: list[DayMatch] = []
     est_surface_keys: set[tuple] = set()
     for m in eligible:
-        surface, estimated = (m.surface, False) if m.surface else guess_surface(m.tournament, m.date)
+        # la fecha de análisis SIEMPRE es la del inicio confirmado en UTC
+        mdate = m.scheduled_at_utc.date() if m.scheduled_at_utc else m.date
+        surface, estimated = (m.surface, False) if m.surface else guess_surface(m.tournament, mdate)
         if estimated:
-            est_surface_keys.add(m.key)
-        day_matches.append(DayMatch(date=m.date, tour=m.tour, tournament=m.tournament,
+            est_surface_keys.add(m.pair_key)
+        day_matches.append(DayMatch(date=mdate, tour=m.tour, tournament=m.tournament,
                                     surface=surface, indoor=m.indoor, round=m.round,
                                     best_of=m.best_of, player_a=m.player1, player_b=m.player2))
     out, warns = (pd.DataFrame(), [])
@@ -196,8 +229,16 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
     if len(out):
         out["odds_age_min"] = _odds_age_minutes(out, quotes)
         out["best_odds"] = _mark_best_odds(out)
+        # trazabilidad prepartido por señal (inicio, estado, fuente, actualización)
+        conf_by_label = {m.label: gres.confirmations.get(m.pair_key, {}) for m in eligible}
+        for col, key in (("start_utc", "start_utc"), ("event_status", "status"),
+                         ("calendar_source", "source"),
+                         ("calendar_updated_at", "source_updated_at"),
+                         ("calendar_status_age_h", "status_age_h"),
+                         ("event_id", "event_id")):
+            out[col] = out["match"].map(lambda lbl, k=key: conf_by_label.get(lbl, {}).get(k))
         # aviso de superficie estimada como reason
-        est_matches = {f"{m.player1} vs {m.player2}" for m in eligible if m.key in est_surface_keys}
+        est_matches = {m.label for m in eligible if m.pair_key in est_surface_keys}
         mask = out["match"].isin(est_matches) & (out["state"] != "descartada")
         out.loc[mask, "reasons"] = out.loc[mask, "reasons"].map(
             lambda r: (r + ";" if r else "") + "superficie_estimada")
@@ -259,14 +300,68 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
         "results_freshness": results_freshness,
         "sync": sync_report,
         "structured": structured_info,
+        # ---- trazabilidad prepartido (fallo Tsitsipas–Fonseca) ----
+        "fail_closed": False,
+        "calendar_confirmed": len(eligible),
+        "calendar_sources_ok": n_authoritative_ok,
+        "prematch_excluded": gate_counts,
+        "prematch_excluded_samples": {
+            r: [f"{m.label} [{m.tour} · {m.tournament}"
+                + (f" · {m.status}" if m.status != "unknown" else " · sin estado")
+                + (f" · inicio {m.scheduled_at_utc.isoformat()}" if m.scheduled_at_utc else "")
+                + f" · fuente {m.source}]" for m in ms[:5]]
+            for r, ms in gres.excluded.items() if ms and r != "no_main_tour"},
+        "orphan_quotes": n_orphan_quotes,
+        "confirmations": {f"{k[1]}__{k[2]}": v for k, v in gres.confirmations.items()},
         "sources": [{"name": s.name, "ok": s.ok, "n": s.n_items, "error": s.error,
-                     "data_timestamp": s.data_timestamp, "notes": s.notes} for s in statuses],
+                     "data_timestamp": s.data_timestamp, "notes": s.notes,
+                     "authoritative": s.authoritative, "orphan": s.n_orphan}
+                    for s in statuses],
         "warnings": warns,
     }
     if export and len(disp):
         disp.to_csv(export, index=False)
         summary["export"] = export
     return ScanResult(summary=summary, rows=out, displayed=disp, statuses=statuses)
+
+
+def _player_registry(cfg: dict) -> set:
+    """Registro de jugadores para resolver iniciales de forma determinista."""
+    try:
+        import pandas as _pd
+
+        from betbot.config import resolve_path
+        p = resolve_path(cfg, "canonical_dir") / "players.parquet"
+        return set(_pd.read_parquet(p)["player_id"]) if p.exists() else set()
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _fail_closed_result(cfg: dict, hours: int, statuses: list[SourceStatus],
+                        results_freshness: dict, sync_report: dict | None) -> ScanResult:
+    """Sin calendario autoritativo operativo: cero señales, con motivo explícito."""
+    from betbot.prematch import FAIL_CLOSED_MSG
+    summary = {
+        "date": str(date.today()), "window_hours": hours,
+        "fail_closed": True, "fail_closed_message": FAIL_CLOSED_MSG,
+        "found": 0, "eligible": 0, "calendar_confirmed": 0, "calendar_sources_ok": 0,
+        "excluded": {"doubles": 0, "qualifying": 0, "challenger": 0, "itf": 0,
+                     "other": 0, "tour": 0},
+        "prematch_excluded": {}, "prematch_excluded_samples": {}, "orphan_quotes": 0,
+        "confirmations": {}, "analyzed_matches": 0, "unresolved_players": 0,
+        "matches_with_odds": 0, "odds_coverage_pct": 0.0, "market_coverage": {},
+        "markets_evaluated": 0, "markets_with_quotes": [],
+        "markets_missing_from_sources": list(SUPPORTED_MARKETS),
+        "stale_discarded": 0, "states": {},
+        "results_freshness": results_freshness, "sync": sync_report,
+        "structured": {"active": False, "providers": [], "events": []},
+        "sources": [{"name": s.name, "ok": s.ok, "n": s.n_items, "error": s.error,
+                     "data_timestamp": s.data_timestamp, "notes": s.notes,
+                     "authoritative": s.authoritative} for s in statuses],
+        "warnings": [FAIL_CLOSED_MSG],
+    }
+    return ScanResult(summary=summary, rows=pd.DataFrame(), displayed=pd.DataFrame(),
+                      statuses=statuses)
 
 
 def _log_structured_prices(cfg: dict, prices: list) -> None:
@@ -312,10 +407,35 @@ _MARKET_LABELS = {"match_winner": "Moneyline", "set1_winner": "Primer set",
                   "three_sets": "Total sets (O/U 2.5)", "set_score": "Marcador exacto de sets"}
 
 
+_EXCL_LABELS = {
+    "fuente_no_autoritativa": "fuente sin estado verificable",
+    "sin_hora_de_inicio": "sin hora de inicio",
+    "estado_desconocido": "estado no verificable",
+    "estado_no_prepartido": "no prepartido (live/terminado/cancelado)",
+    "estado_calendario_caducado": "estado de calendario caducado",
+    "ya_comenzado": "ya comenzado",
+    "fuera_de_ventana": "fuera de la ventana",
+    "already_completed": "ya completados (resultado local)",
+    "no_main_tour": "fuera de main tour",
+}
+
+
 def render_report(res: ScanResult, show_likely: bool = False) -> str:
     s = res.summary
     lines: list[str] = []
     lines.append(f"BETBOT — {s['date']}  (ventana {s['window_hours']}h)")
+    if s.get("fail_closed"):
+        lines.append("")
+        lines.append(s.get("fail_closed_message", ""))
+        lines.append("Ninguna fuente de calendario autoritativa respondió: no se analiza "
+                     "ningún partido (cero señales es preferible a recomendar un "
+                     "partido ya jugado).")
+        for src in s["sources"]:
+            flag = "OK " if src["ok"] else "FALLO"
+            auth = " [autoritativa]" if src.get("authoritative") else ""
+            err = f" · {src['error']}" if src["error"] else ""
+            lines.append(f"  fuente {src['name']}{auth}: {flag}{err}")
+        return "\n".join(lines)
     # frescura de resultados por circuito, SIEMPRE antes del resto del informe
     fresh = s.get("results_freshness") or {}
     if fresh:
@@ -341,9 +461,24 @@ def render_report(res: ScanResult, show_likely: bool = False) -> str:
             lines.append(f"Sync resultados: +{sync.get('n_accepted', 0)} nuevos, "
                          f"{sync.get('n_duplicates_skipped', 0)} duplicados omitidos, "
                          f"{sync.get('n_quarantined', 0)} en cuarentena  [{srcs}]")
-    lines.append(f"Partidos encontrados: {s['found']}  ·  elegibles main tour: {s['eligible']} "
+    lines.append(f"Partidos en el calendario: {s['found']}  ·  "
+                 f"CONFIRMADOS prepartido: {s.get('calendar_confirmed', s['eligible'])} "
                  f"(excluidos: dobles {s['excluded']['doubles']}, challenger {s['excluded']['challenger']}, "
                  f"itf {s['excluded']['itf']}, otros {s['excluded']['other'] + s['excluded']['qualifying']})")
+    excl = s.get("prematch_excluded") or {}
+    samples = s.get("prematch_excluded_samples") or {}
+    for reason in ("estado_no_prepartido", "already_completed", "ya_comenzado",
+                   "estado_desconocido", "sin_hora_de_inicio", "fuente_no_autoritativa",
+                   "estado_calendario_caducado", "fuera_de_ventana"):
+        n = excl.get(reason, 0)
+        if not n:
+            continue
+        lines.append(f"  excluidos — {_EXCL_LABELS.get(reason, reason)}: {n}")
+        for ex in (samples.get(reason) or [])[:3]:
+            lines.append(f"      · {ex}")
+    if s.get("orphan_quotes"):
+        lines.append(f"  cuotas sin evento de calendario confirmado (orphan_quote): "
+                     f"{s['orphan_quotes']} — no se analizan")
     lines.append(f"Partidos analizados: {s['analyzed_matches']}  ·  no enlazados: {s['unresolved_players']}")
     # cobertura POR MERCADO: nunca un "100%" que sea solo moneyline
     cov = s.get("market_coverage") or {}
@@ -385,9 +520,10 @@ def render_report(res: ScanResult, show_likely: bool = False) -> str:
                  f"Sin value: {st.get('sin_value', 0)}  Descartados: {st.get('descartada', 0)}")
     for src in s["sources"]:
         flag = "OK " if src["ok"] else "FALLO"
+        auth = " [calendario autoritativo]" if src.get("authoritative") else ""
         extra = f" · datos de {src['data_timestamp'][:16]}" if src["data_timestamp"] else ""
         err = f" · {src['error']}" if src["error"] else ""
-        lines.append(f"  fuente {src['name']}: {flag} ({src['n']} items){extra}{err}")
+        lines.append(f"  fuente {src['name']}{auth}: {flag} ({src['n']} items){extra}{err}")
         for n in src["notes"]:
             lines.append(f"    aviso: {n}")
 
@@ -404,6 +540,15 @@ def render_report(res: ScanResult, show_likely: bool = False) -> str:
         lines.append(f"\n===== {state.upper().replace('_', ' ')} ({len(block)}) =====")
         for _, r in block.iterrows():
             lines.append(f"\n{r['match']}   [{r['tour']} · {r.get('tournament', '')} · {r.get('surface', '')}]")
+            start = r.get("start_utc")
+            if start:
+                lines.append(f"  Inicio confirmado: {start} UTC")
+                lines.append(f"  Estado: {r.get('event_status', '?')}")
+                lines.append(f"  Fuente de calendario: {r.get('calendar_source', '?')}"
+                             + (f" (evento {r['event_id']})" if r.get("event_id") else ""))
+                age = r.get("calendar_status_age_h")
+                lines.append(f"  Última actualización: {r.get('calendar_updated_at', '?')}"
+                             + (f" (hace {age:.1f} h)" if pd.notna(age) else ""))
             sel = r["selection_name"]
             mk = r["market"]
             lines.append(f"  Mercado: {mk} — {sel}")

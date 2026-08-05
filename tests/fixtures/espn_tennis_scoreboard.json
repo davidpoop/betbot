@@ -1,0 +1,1199 @@
+{
+  "leagues": [
+    {
+      "id": "900",
+      "uid": "s:850~l:900",
+      "name": "WTA",
+      "abbreviation": "WTA",
+      "midsizeName": "WTA",
+      "slug": "wta",
+      "season": {
+        "year": 2026,
+        "startDate": "2026-01-01T08:00Z",
+        "endDate": "2027-01-01T07:59Z",
+        "displayName": "2026",
+        "type": {
+          "id": "2",
+          "type": 2,
+          "name": "Regular Season",
+          "abbreviation": "reg"
+        }
+      },
+      "logos": [
+        {
+          "href": "https://a.espncdn.com/combiner/i?img=/redesign/assets/img/icons/ESPN-icon-tennis.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+            "full",
+            "default"
+          ],
+          "lastUpdated": "2026-06-02T23:47Z"
+        },
+        {
+          "href": "https://a.espncdn.com/combiner/i?img=/redesign/assets/img/icons/ESPN-icon-tennis.png",
+          "width": 500,
+          "height": 500,
+          "alt": "",
+          "rel": [
+            "full",
+            "dark"
+          ],
+          "lastUpdated": "2026-06-02T23:47Z"
+        }
+      ],
+      "calendarType": "day",
+      "calendarIsWhitelist": true,
+      "calendarStartDate": "2026-01-01T08:00Z",
+      "calendarEndDate": "2027-01-01T07:59Z",
+      "calendar": [
+        "2026-01-01T08:00Z",
+        "2026-01-02T08:00Z",
+        "2026-01-03T08:00Z",
+        "2026-01-04T08:00Z",
+        "2026-01-05T08:00Z",
+        "2026-01-06T08:00Z",
+        "2026-01-07T08:00Z",
+        "2026-01-08T08:00Z",
+        "2026-01-09T08:00Z",
+        "2026-01-10T08:00Z",
+        "2026-01-11T08:00Z",
+        "2026-01-12T08:00Z",
+        "2026-01-13T08:00Z",
+        "2026-01-14T08:00Z",
+        "2026-01-15T08:00Z",
+        "2026-01-16T08:00Z",
+        "2026-01-17T08:00Z",
+        "2026-01-18T08:00Z",
+        "2026-01-19T08:00Z",
+        "2026-01-20T08:00Z",
+        "2026-01-21T08:00Z",
+        "2026-01-22T08:00Z",
+        "2026-01-23T08:00Z",
+        "2026-01-24T08:00Z",
+        "2026-01-25T08:00Z",
+        "2026-01-26T08:00Z",
+        "2026-01-27T08:00Z",
+        "2026-01-28T08:00Z",
+        "2026-01-29T08:00Z",
+        "2026-01-30T08:00Z",
+        "2026-01-31T08:00Z",
+        "2026-02-01T08:00Z",
+        "2026-02-02T08:00Z",
+        "2026-02-03T08:00Z",
+        "2026-02-04T08:00Z",
+        "2026-02-05T08:00Z",
+        "2026-02-06T08:00Z",
+        "2026-02-07T08:00Z",
+        "2026-02-08T08:00Z",
+        "2026-02-09T08:00Z",
+        "2026-02-10T08:00Z",
+        "2026-02-11T08:00Z",
+        "2026-02-12T08:00Z",
+        "2026-02-13T08:00Z",
+        "2026-02-14T08:00Z",
+        "2026-02-15T08:00Z",
+        "2026-02-16T08:00Z",
+        "2026-02-17T08:00Z",
+        "2026-02-18T08:00Z",
+        "2026-02-19T08:00Z",
+        "2026-02-20T08:00Z",
+        "2026-02-21T08:00Z",
+        "2026-02-22T08:00Z",
+        "2026-02-23T08:00Z",
+        "2026-02-24T08:00Z",
+        "2026-02-25T08:00Z",
+        "2026-02-26T08:00Z",
+        "2026-02-27T08:00Z",
+        "2026-02-28T08:00Z",
+        "2026-03-01T08:00Z",
+        "2026-03-02T08:00Z",
+        "2026-03-03T08:00Z",
+        "2026-03-04T08:00Z",
+        "2026-03-05T08:00Z",
+        "2026-03-06T08:00Z",
+        "2026-03-07T08:00Z",
+        "2026-03-08T08:00Z",
+        "2026-03-09T07:00Z",
+        "2026-03-10T07:00Z",
+        "2026-03-11T07:00Z",
+        "2026-03-12T07:00Z",
+        "2026-03-13T07:00Z",
+        "2026-03-14T07:00Z",
+        "2026-03-15T07:00Z",
+        "2026-03-16T07:00Z",
+        "2026-03-17T07:00Z",
+        "2026-03-19T07:00Z",
+        "2026-03-20T07:00Z",
+        "2026-03-21T07:00Z",
+        "2026-03-22T07:00Z",
+        "2026-03-23T07:00Z",
+        "2026-03-24T07:00Z",
+        "2026-03-25T07:00Z",
+        "2026-03-26T07:00Z",
+        "2026-03-27T07:00Z",
+        "2026-03-28T07:00Z",
+        "2026-03-29T07:00Z",
+        "2026-03-30T07:00Z",
+        "2026-03-31T07:00Z",
+        "2026-04-01T07:00Z",
+        "2026-04-02T07:00Z",
+        "2026-04-03T07:00Z",
+        "2026-04-04T07:00Z",
+        "2026-04-05T07:00Z",
+        "2026-04-06T07:00Z",
+        "2026-04-07T07:00Z",
+        "2026-04-08T07:00Z",
+        "2026-04-09T07:00Z",
+        "2026-04-10T07:00Z",
+        "2026-04-11T07:00Z",
+        "2026-04-12T07:00Z",
+        "2026-04-13T07:00Z",
+        "2026-04-14T07:00Z",
+        "2026-04-15T07:00Z",
+        "2026-04-16T07:00Z",
+        "2026-04-17T07:00Z",
+        "2026-04-18T07:00Z",
+        "2026-04-19T07:00Z",
+        "2026-04-20T07:00Z",
+        "2026-04-21T07:00Z",
+        "2026-04-22T07:00Z",
+        "2026-04-23T07:00Z",
+        "2026-04-24T07:00Z",
+        "2026-04-25T07:00Z",
+        "2026-04-26T07:00Z",
+        "2026-04-27T07:00Z",
+        "2026-04-28T07:00Z",
+        "2026-04-29T07:00Z",
+        "2026-04-30T07:00Z",
+        "2026-05-01T07:00Z",
+        "2026-05-02T07:00Z",
+        "2026-05-03T07:00Z",
+        "2026-05-04T07:00Z",
+        "2026-05-05T07:00Z",
+        "2026-05-06T07:00Z",
+        "2026-05-07T07:00Z",
+        "2026-05-08T07:00Z",
+        "2026-05-09T07:00Z",
+        "2026-05-10T07:00Z",
+        "2026-05-11T07:00Z",
+        "2026-05-12T07:00Z",
+        "2026-05-13T07:00Z",
+        "2026-05-14T07:00Z",
+        "2026-05-15T07:00Z",
+        "2026-05-16T07:00Z",
+        "2026-05-17T07:00Z",
+        "2026-05-18T07:00Z",
+        "2026-05-19T07:00Z",
+        "2026-05-20T07:00Z",
+        "2026-05-21T07:00Z",
+        "2026-05-22T07:00Z",
+        "2026-05-23T07:00Z",
+        "2026-05-24T07:00Z",
+        "2026-05-25T07:00Z",
+        "2026-05-26T07:00Z",
+        "2026-05-27T07:00Z",
+        "2026-05-28T07:00Z",
+        "2026-05-29T07:00Z",
+        "2026-05-30T07:00Z",
+        "2026-05-31T07:00Z",
+        "2026-06-01T07:00Z",
+        "2026-06-02T07:00Z",
+        "2026-06-03T07:00Z",
+        "2026-06-04T07:00Z",
+        "2026-06-05T07:00Z",
+        "2026-06-06T07:00Z",
+        "2026-06-07T07:00Z",
+        "2026-06-08T07:00Z",
+        "2026-06-10T07:00Z",
+        "2026-06-12T07:00Z",
+        "2026-06-13T07:00Z",
+        "2026-06-14T07:00Z",
+        "2026-06-15T07:00Z",
+        "2026-06-17T07:00Z",
+        "2026-06-19T07:00Z",
+        "2026-06-20T07:00Z",
+        "2026-06-21T07:00Z",
+        "2026-06-22T07:00Z",
+        "2026-06-23T07:00Z",
+        "2026-06-24T07:00Z",
+        "2026-06-25T07:00Z",
+        "2026-06-26T07:00Z",
+        "2026-06-27T07:00Z",
+        "2026-06-29T07:00Z",
+        "2026-07-01T07:00Z",
+        "2026-07-03T07:00Z",
+        "2026-07-05T07:00Z",
+        "2026-07-07T07:00Z",
+        "2026-07-08T07:00Z",
+        "2026-07-09T07:00Z",
+        "2026-07-10T07:00Z",
+        "2026-07-11T07:00Z",
+        "2026-07-12T07:00Z"
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "172-2026",
+      "uid": "s:850~l:900~e:172-2026",
+      "date": "2026-05-18T04:00Z",
+      "endDate": "2026-06-08T03:59Z",
+      "major": true,
+      "name": "Roland Garros",
+      "shortName": "Roland Garros",
+      "season": {
+        "year": 2026,
+        "type": 2
+      },
+      "status": {
+        "period": 2,
+        "type": {
+          "id": "3",
+          "name": "STATUS_FINAL",
+          "state": "post",
+          "completed": true,
+          "description": "Final",
+          "detail": "Final",
+          "shortDetail": "Final"
+        }
+      },
+      "venue": {
+        "displayName": "Paris, France"
+      },
+      "links": [
+        {
+          "language": "en-US",
+          "rel": [
+            "summary",
+            "desktop",
+            "event"
+          ],
+          "href": "https://www.espn.com/tennis/scoreboard/tournament/_/eventId/172-2026/competitionType/2",
+          "text": "Summary",
+          "shortText": "Summary",
+          "isExternal": false,
+          "isPremium": false,
+          "isHidden": false
+        },
+        {
+          "language": "en-US",
+          "rel": [
+            "bracket",
+            "desktop",
+            "event"
+          ],
+          "href": "https://www.espn.com/tennis/bracket/_/year/2026/tournamentId/172/type/2",
+          "text": "Bracket",
+          "shortText": "Bracket",
+          "isExternal": false,
+          "isPremium": false,
+          "isHidden": false
+        }
+      ],
+      "previousWinners": [
+        {
+          "displayName": "Carlos Alcaraz",
+          "shortDisplayName": "C. Alcaraz",
+          "type": {
+            "id": "1",
+            "text": "Men's Singles",
+            "slug": "mens-singles"
+          },
+          "headshot": "https://a.espncdn.com/i/headshots/tennis/players/full/3782.png",
+          "links": [
+            {
+              "language": "en-US",
+              "rel": [
+                "playercard",
+                "desktop",
+                "athlete"
+              ],
+              "href": "https://www.espn.com/tennis/player/_/id/3782/carlos-alcaraz",
+              "text": "Player Card",
+              "shortText": "Player Card",
+              "isExternal": false,
+              "isPremium": false,
+              "isHidden": false
+            }
+          ]
+        },
+        {
+          "displayName": "Coco Gauff",
+          "shortDisplayName": "C. Gauff",
+          "type": {
+            "id": "2",
+            "text": "Women's Singles",
+            "slug": "womens-singles"
+          },
+          "headshot": "https://a.espncdn.com/i/headshots/tennis/players/full/3626.png",
+          "links": [
+            {
+              "language": "en-US",
+              "rel": [
+                "playercard",
+                "desktop",
+                "athlete"
+              ],
+              "href": "https://www.espn.com/tennis/player/_/id/3626/coco-gauff",
+              "text": "Player Card",
+              "shortText": "Player Card",
+              "isExternal": false,
+              "isPremium": false,
+              "isHidden": false
+            }
+          ]
+        },
+        {
+          "displayName": "Marcel Granollers / Horacio Zeballos",
+          "shortDisplayName": "M. Granollers / H. Zeballos",
+          "type": {
+            "id": "3",
+            "text": "Men's Doubles",
+            "slug": "mens-doubles"
+          },
+          "athletes": [
+            {
+              "displayName": "Marcel Granollers",
+              "shortDisplayName": "M. Granollers",
+              "headshot": "https://a.espncdn.com/i/headshots/tennis/players/full/698.png",
+              "links": [
+                {
+                  "language": "en-US",
+                  "rel": [
+                    "playercard",
+                    "desktop",
+                    "athlete"
+                  ],
+                  "href": "https://www.espn.com/tennis/player/_/id/698/marcel-granollers",
+                  "text": "Player Card",
+                  "shortText": "Player Card",
+                  "isExternal": false,
+                  "isPremium": false,
+                  "isHidden": false
+                }
+              ]
+            },
+            {
+              "displayName": "Horacio Zeballos",
+              "shortDisplayName": "H. Zeballos",
+              "headshot": "https://a.espncdn.com/i/headshots/tennis/players/full/1513.png",
+              "links": [
+                {
+                  "language": "en-US",
+                  "rel": [
+                    "playercard",
+                    "desktop",
+                    "athlete"
+                  ],
+                  "href": "https://www.espn.com/tennis/player/_/id/1513/horacio-zeballos",
+                  "text": "Player Card",
+                  "shortText": "Player Card",
+                  "isExternal": false,
+                  "isPremium": false,
+                  "isHidden": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "displayName": "Sara Errani / Jasmine Paolini",
+          "shortDisplayName": "S. Errani / J. Paolini",
+          "type": {
+            "id": "4",
+            "text": "Women's Doubles",
+            "slug": "womens-doubles"
+          },
+          "athletes": [
+            {
+              "displayName": "Sara Errani",
+              "shortDisplayName": "S. Errani",
+              "headshot": "https://a.espncdn.com/i/headshots/tennis/players/full/636.png",
+              "links": [
+                {
+                  "language": "en-US",
+                  "rel": [
+                    "playercard",
+                    "desktop",
+                    "athlete"
+                  ],
+                  "href": "https://www.espn.com/tennis/player/_/id/636/sara-errani",
+                  "text": "Player Card",
+                  "shortText": "Player Card",
+                  "isExternal": false,
+                  "isPremium": false,
+                  "isHidden": false
+                }
+              ]
+            },
+            {
+              "displayName": "Jasmine Paolini",
+              "shortDisplayName": "J. Paolini",
+              "links": [
+                {
+                  "language": "en-US",
+                  "rel": [
+                    "playercard",
+                    "desktop",
+                    "athlete"
+                  ],
+                  "href": "https://www.espn.com/tennis/player/_/id/2615/jasmine-paolini",
+                  "text": "Player Card",
+                  "shortText": "Player Card",
+                  "isExternal": false,
+                  "isPremium": false,
+                  "isHidden": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "displayName": "Andrea Vavassori / Sara Errani",
+          "shortDisplayName": "A. Vavassori / S. Errani",
+          "type": {
+            "id": "6",
+            "text": "Mixed Doubles",
+            "slug": "mixed-doubles"
+          },
+          "athletes": [
+            {
+              "displayName": "Andrea Vavassori",
+              "shortDisplayName": "A. Vavassori",
+              "links": [
+                {
+                  "language": "en-US",
+                  "rel": [
+                    "playercard",
+                    "desktop",
+                    "athlete"
+                  ],
+                  "href": "https://www.espn.com/tennis/player/_/id/3548/andrea-vavassori",
+                  "text": "Player Card",
+                  "shortText": "Player Card",
+                  "isExternal": false,
+                  "isPremium": false,
+                  "isHidden": false
+                }
+              ]
+            },
+            {
+              "displayName": "Sara Errani",
+              "shortDisplayName": "S. Errani",
+              "headshot": "https://a.espncdn.com/i/headshots/tennis/players/full/636.png",
+              "links": [
+                {
+                  "language": "en-US",
+                  "rel": [
+                    "playercard",
+                    "desktop",
+                    "athlete"
+                  ],
+                  "href": "https://www.espn.com/tennis/player/_/id/636/sara-errani",
+                  "text": "Player Card",
+                  "shortText": "Player Card",
+                  "isExternal": false,
+                  "isPremium": false,
+                  "isHidden": false
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "calendar": {
+        "type": "day",
+        "timeZone": "America/New_York",
+        "startDate": "2026-05-18T04:00Z",
+        "endDate": "2026-06-07T04:00Z",
+        "calendar": [
+          "2026-05-18T04:00Z",
+          "2026-05-19T04:00Z",
+          "2026-05-20T04:00Z",
+          "2026-05-21T04:00Z",
+          "2026-05-22T04:00Z",
+          "2026-05-24T04:00Z",
+          "2026-05-25T04:00Z",
+          "2026-05-26T04:00Z",
+          "2026-05-27T04:00Z",
+          "2026-05-28T04:00Z",
+          "2026-05-29T04:00Z",
+          "2026-05-30T04:00Z",
+          "2026-05-31T04:00Z",
+          "2026-06-01T04:00Z",
+          "2026-06-02T04:00Z",
+          "2026-06-03T04:00Z",
+          "2026-06-04T04:00Z",
+          "2026-06-05T04:00Z",
+          "2026-06-06T04:00Z",
+          "2026-06-07T04:00Z"
+        ]
+      },
+      "groupings": [
+        {
+          "grouping": {
+            "id": "2",
+            "slug": "womens-singles",
+            "displayName": "Women's Singles"
+          },
+          "competitions": [
+            {
+              "id": "175549",
+              "uid": "s:850~l:900~e:172-2026~c:175549",
+              "date": "2026-06-03T09:10Z",
+              "startDate": "2026-06-03T09:10Z",
+              "timeValid": true,
+              "recent": false,
+              "status": {
+                "period": 2,
+                "type": {
+                  "id": "3",
+                  "name": "STATUS_FINAL",
+                  "state": "post",
+                  "completed": true,
+                  "description": "Final",
+                  "detail": "Final",
+                  "shortDetail": "Final"
+                }
+              },
+              "venue": {
+                "fullName": "Paris, France",
+                "court": "Court Philippe-Chatrier"
+              },
+              "format": {
+                "regulation": {
+                  "periods": 3
+                }
+              },
+              "notes": [
+                {
+                  "text": "Maja Chwalinska (POL) bt (22) Anna Kalinskaya (RUS) 7-6 (7-3) 6-3",
+                  "type": "event"
+                }
+              ],
+              "geoBroadcasts": [
+                {
+                  "type": {
+                    "id": "1",
+                    "shortName": "TV"
+                  },
+                  "market": {
+                    "id": "1",
+                    "type": "National"
+                  },
+                  "media": {
+                    "shortName": "truTV"
+                  },
+                  "lang": "en",
+                  "region": "us"
+                },
+                {
+                  "type": {
+                    "id": "1",
+                    "shortName": "TV"
+                  },
+                  "market": {
+                    "id": "1",
+                    "type": "National"
+                  },
+                  "media": {
+                    "shortName": "TNT"
+                  },
+                  "lang": "en",
+                  "region": "us"
+                },
+                {
+                  "type": {
+                    "id": "1",
+                    "shortName": "TV"
+                  },
+                  "market": {
+                    "id": "1",
+                    "type": "National"
+                  },
+                  "media": {
+                    "shortName": "HBO Max"
+                  },
+                  "lang": "en",
+                  "region": "us"
+                }
+              ],
+              "broadcasts": [
+                {
+                  "market": "national",
+                  "names": [
+                    "truTV",
+                    "TNT",
+                    "HBO Max"
+                  ]
+                }
+              ],
+              "broadcast": "truTV/TNT/HBO Max",
+              "competitors": [
+                {
+                  "id": "3417",
+                  "uid": "s:850~l:900~a:3417",
+                  "type": "athlete",
+                  "order": 2,
+                  "homeAway": "away",
+                  "winner": true,
+                  "linescores": [
+                    {
+                      "value": 7.0,
+                      "tiebreak": 7,
+                      "winner": true
+                    },
+                    {
+                      "value": 6.0,
+                      "winner": true
+                    }
+                  ],
+                  "athlete": {
+                    "guid": "1aefc834-3fb5-8f6e-669d-83aad147af39",
+                    "displayName": "Maja Chwalinska",
+                    "shortName": "M. Chwalinska",
+                    "fullName": "Maja Chwalinska",
+                    "flag": {
+                      "href": "https://a.espncdn.com/i/teamlogos/countries/500/pol.png",
+                      "alt": "Poland",
+                      "rel": [
+                        "country-flag"
+                      ]
+                    },
+                    "links": [
+                      {
+                        "language": "en-US",
+                        "rel": [
+                          "playercard",
+                          "desktop",
+                          "athlete"
+                        ],
+                        "href": "https://www.espn.com/tennis/player/_/id/3417/maja-chwalinska",
+                        "text": "Player Card",
+                        "shortText": "Player Card",
+                        "isExternal": false,
+                        "isPremium": false,
+                        "isHidden": false
+                      }
+                    ]
+                  },
+                  "statistics": []
+                },
+                {
+                  "id": "2977",
+                  "uid": "s:850~l:900~a:2977",
+                  "type": "athlete",
+                  "order": 1,
+                  "homeAway": "home",
+                  "winner": false,
+                  "curatedRank": {
+                    "current": 22
+                  },
+                  "linescores": [
+                    {
+                      "value": 6.0,
+                      "tiebreak": 3,
+                      "winner": false
+                    },
+                    {
+                      "value": 3.0,
+                      "winner": false
+                    }
+                  ],
+                  "athlete": {
+                    "guid": "a6822bdd-9f61-b29f-148f-64fc93284802",
+                    "displayName": "Anna Kalinskaya",
+                    "shortName": "A. Kalinskaya",
+                    "fullName": "Anna Kalinskaya",
+                    "flag": {
+                      "href": "https://a.espncdn.com/i/teamlogos/countries/500/rus.png",
+                      "alt": "Russia",
+                      "rel": [
+                        "country-flag"
+                      ]
+                    },
+                    "links": [
+                      {
+                        "language": "en-US",
+                        "rel": [
+                          "playercard",
+                          "desktop",
+                          "athlete"
+                        ],
+                        "href": "https://www.espn.com/tennis/player/_/id/2977/anna-kalinskaya",
+                        "text": "Player Card",
+                        "shortText": "Player Card",
+                        "isExternal": false,
+                        "isPremium": false,
+                        "isHidden": false
+                      }
+                    ]
+                  },
+                  "statistics": []
+                }
+              ],
+              "tournamentId": 172,
+              "type": {
+                "id": "2",
+                "text": "Women's Singles",
+                "slug": "womens-singles"
+              },
+              "round": {
+                "id": "5",
+                "displayName": "Quarterfinal"
+              },
+              "wasSuspended": false
+            },
+            {
+              "id": "175552",
+              "uid": "s:850~l:900~e:172-2026~c:175552",
+              "date": "2026-06-03T11:30Z",
+              "startDate": "2026-06-03T11:30Z",
+              "timeValid": true,
+              "recent": false,
+              "status": {
+                "period": 3,
+                "type": {
+                  "id": "3",
+                  "name": "STATUS_FINAL",
+                  "state": "post",
+                  "completed": true,
+                  "description": "Final",
+                  "detail": "Final",
+                  "shortDetail": "Final"
+                }
+              },
+              "venue": {
+                "fullName": "Paris, France",
+                "court": "Court Philippe-Chatrier"
+              },
+              "format": {
+                "regulation": {
+                  "periods": 3
+                }
+              },
+              "notes": [
+                {
+                  "text": "(25) Diana Shnaider (RUS) bt (1) Aryna Sabalenka (BLR) 3-6 7-5 6-0",
+                  "type": "event"
+                }
+              ],
+              "geoBroadcasts": [
+                {
+                  "type": {
+                    "id": "1",
+                    "shortName": "TV"
+                  },
+                  "market": {
+                    "id": "1",
+                    "type": "National"
+                  },
+                  "media": {
+                    "shortName": "truTV"
+                  },
+                  "lang": "en",
+                  "region": "us"
+                },
+                {
+                  "type": {
+                    "id": "1",
+                    "shortName": "TV"
+                  },
+                  "market": {
+                    "id": "1",
+                    "type": "National"
+                  },
+                  "media": {
+                    "shortName": "TNT"
+                  },
+                  "lang": "en",
+                  "region": "us"
+                },
+                {
+                  "type": {
+                    "id": "1",
+                    "shortName": "TV"
+                  },
+                  "market": {
+                    "id": "1",
+                    "type": "National"
+                  },
+                  "media": {
+                    "shortName": "HBO Max"
+                  },
+                  "lang": "en",
+                  "region": "us"
+                }
+              ],
+              "broadcasts": [
+                {
+                  "market": "national",
+                  "names": [
+                    "truTV",
+                    "TNT",
+                    "HBO Max"
+                  ]
+                }
+              ],
+              "broadcast": "truTV/TNT/HBO Max",
+              "competitors": [
+                {
+                  "id": "8017",
+                  "uid": "s:850~l:900~a:8017",
+                  "type": "athlete",
+                  "order": 2,
+                  "homeAway": "away",
+                  "winner": true,
+                  "curatedRank": {
+                    "current": 25
+                  },
+                  "linescores": [
+                    {
+                      "value": 3.0,
+                      "winner": false
+                    },
+                    {
+                      "value": 7.0,
+                      "winner": true
+                    },
+                    {
+                      "value": 6.0,
+                      "winner": true
+                    }
+                  ],
+                  "athlete": {
+                    "guid": "8af6b36d-7d61-3c1d-8134-c7b52a123dcf",
+                    "displayName": "Diana Shnaider",
+                    "shortName": "D. Shnaider",
+                    "fullName": "Diana Shnaider",
+                    "flag": {
+                      "href": "https://a.espncdn.com/i/teamlogos/countries/500/rus.png",
+                      "alt": "Russia",
+                      "rel": [
+                        "country-flag"
+                      ]
+                    },
+                    "links": [
+                      {
+                        "language": "en-US",
+                        "rel": [
+                          "playercard",
+                          "desktop",
+                          "athlete"
+                        ],
+                        "href": "https://www.espn.com/tennis/player/_/id/8017/diana-shnaider",
+                        "text": "Player Card",
+                        "shortText": "Player Card",
+                        "isExternal": false,
+                        "isPremium": false,
+                        "isHidden": false
+                      }
+                    ]
+                  },
+                  "statistics": []
+                },
+                {
+                  "id": "3038",
+                  "uid": "s:850~l:900~a:3038",
+                  "type": "athlete",
+                  "order": 1,
+                  "homeAway": "home",
+                  "winner": false,
+                  "curatedRank": {
+                    "current": 1
+                  },
+                  "linescores": [
+                    {
+                      "value": 6.0,
+                      "winner": true
+                    },
+                    {
+                      "value": 5.0,
+                      "winner": false
+                    },
+                    {
+                      "value": 0.0,
+                      "winner": false
+                    }
+                  ],
+                  "athlete": {
+                    "guid": "c91d133a-526a-ea8d-654c-7ef6915ad63b",
+                    "displayName": "Aryna Sabalenka",
+                    "shortName": "A. Sabalenka",
+                    "fullName": "Aryna Sabalenka",
+                    "flag": {
+                      "href": "https://a.espncdn.com/i/teamlogos/countries/500/blr.png",
+                      "alt": "Belarus",
+                      "rel": [
+                        "country-flag"
+                      ]
+                    },
+                    "links": [
+                      {
+                        "language": "en-US",
+                        "rel": [
+                          "playercard",
+                          "desktop",
+                          "athlete"
+                        ],
+                        "href": "https://www.espn.com/tennis/player/_/id/3038/aryna-sabalenka",
+                        "text": "Player Card",
+                        "shortText": "Player Card",
+                        "isExternal": false,
+                        "isPremium": false,
+                        "isHidden": false
+                      }
+                    ]
+                  },
+                  "statistics": []
+                }
+              ],
+              "tournamentId": 172,
+              "type": {
+                "id": "2",
+                "text": "Women's Singles",
+                "slug": "womens-singles"
+              },
+              "round": {
+                "id": "5",
+                "displayName": "Quarterfinal"
+              },
+              "wasSuspended": false
+            }
+          ]
+        },
+        {
+          "grouping": {
+            "id": "4",
+            "slug": "womens-doubles",
+            "displayName": "Women's Doubles"
+          },
+          "competitions": [
+            {
+              "id": "175912",
+              "uid": "s:850~l:900~e:172-2026~c:175912",
+              "date": "2026-06-03T16:00Z",
+              "startDate": "2026-06-03T16:00Z",
+              "timeValid": true,
+              "recent": false,
+              "status": {
+                "period": 2,
+                "type": {
+                  "id": "3",
+                  "name": "STATUS_FINAL",
+                  "state": "post",
+                  "completed": true,
+                  "description": "Final",
+                  "detail": "Final",
+                  "shortDetail": "Final"
+                }
+              },
+              "venue": {
+                "fullName": "Paris, France",
+                "court": "Court Suzanne-Lenglen"
+              },
+              "format": {
+                "regulation": {
+                  "periods": 3
+                }
+              },
+              "notes": [
+                {
+                  "text": "Shuko Aoyama (JPN) & En-Shuo Liang (TPE) bt (13) Hanyu Guo (CHN) & Kristina Mladenovic (FRA) 6-4 6-4",
+                  "type": "event"
+                }
+              ],
+              "geoBroadcasts": [],
+              "broadcasts": [],
+              "broadcast": "",
+              "competitors": [
+                {
+                  "id": "3149-1273",
+                  "uid": "s:850~l:900~t:3149-1273",
+                  "type": "team",
+                  "order": 2,
+                  "homeAway": "away",
+                  "winner": false,
+                  "curatedRank": {
+                    "current": 13
+                  },
+                  "linescores": [
+                    {
+                      "value": 4.0,
+                      "winner": false
+                    },
+                    {
+                      "value": 4.0,
+                      "winner": false
+                    }
+                  ],
+                  "roster": {
+                    "displayName": "Guo Hanyu / Kristina Mladenovic",
+                    "shortDisplayName": "H. Guo / K. Mladenovic",
+                    "athletes": [
+                      {
+                        "guid": "75e42130-d572-1fbe-08bb-1d529277f6bf",
+                        "displayName": "Guo Hanyu",
+                        "shortName": "H. Guo",
+                        "fullName": "Guo Hanyu",
+                        "flag": {
+                          "href": "https://a.espncdn.com/i/teamlogos/countries/500/chn.png",
+                          "alt": "China",
+                          "rel": [
+                            "country-flag"
+                          ]
+                        },
+                        "links": [
+                          {
+                            "language": "en-US",
+                            "rel": [
+                              "playercard",
+                              "desktop",
+                              "athlete"
+                            ],
+                            "href": "https://www.espn.com/tennis/player/_/id/3149/guo-hanyu",
+                            "text": "Player Card",
+                            "shortText": "Player Card",
+                            "isExternal": false,
+                            "isPremium": false,
+                            "isHidden": false
+                          }
+                        ]
+                      },
+                      {
+                        "guid": "549b9c79-8dc2-b381-96be-1ba46ede0811",
+                        "displayName": "Kristina Mladenovic",
+                        "shortName": "K. Mladenovic",
+                        "fullName": "Kristina Mladenovic",
+                        "flag": {
+                          "href": "https://a.espncdn.com/i/teamlogos/countries/500/fra.png",
+                          "alt": "France",
+                          "rel": [
+                            "country-flag"
+                          ]
+                        },
+                        "links": [
+                          {
+                            "language": "en-US",
+                            "rel": [
+                              "playercard",
+                              "desktop",
+                              "athlete"
+                            ],
+                            "href": "https://www.espn.com/tennis/player/_/id/1273/kristina-mladenovic",
+                            "text": "Player Card",
+                            "shortText": "Player Card",
+                            "isExternal": false,
+                            "isPremium": false,
+                            "isHidden": false
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  "statistics": []
+                },
+                {
+                  "id": "1969-3583",
+                  "uid": "s:850~l:900~t:1969-3583",
+                  "type": "team",
+                  "order": 1,
+                  "homeAway": "home",
+                  "winner": true,
+                  "linescores": [
+                    {
+                      "value": 6.0,
+                      "winner": true
+                    },
+                    {
+                      "value": 6.0,
+                      "winner": true
+                    }
+                  ],
+                  "roster": {
+                    "displayName": "Shuko Aoyama / En-Shuo Liang",
+                    "shortDisplayName": "S. Aoyama / E. Liang",
+                    "athletes": [
+                      {
+                        "guid": "a97b67a5-863b-1213-c91a-632e52f458fe",
+                        "displayName": "Shuko Aoyama",
+                        "shortName": "S. Aoyama",
+                        "fullName": "Shuko Aoyama",
+                        "flag": {
+                          "href": "https://a.espncdn.com/i/teamlogos/countries/500/jpn.png",
+                          "alt": "Japan",
+                          "rel": [
+                            "country-flag"
+                          ]
+                        },
+                        "links": [
+                          {
+                            "language": "en-US",
+                            "rel": [
+                              "playercard",
+                              "desktop",
+                              "athlete"
+                            ],
+                            "href": "https://www.espn.com/tennis/player/_/id/1969/shuko-aoyama",
+                            "text": "Player Card",
+                            "shortText": "Player Card",
+                            "isExternal": false,
+                            "isPremium": false,
+                            "isHidden": false
+                          }
+                        ]
+                      },
+                      {
+                        "guid": "c8b7ba99-ca2f-f2b0-f045-afe7d8153c2a",
+                        "displayName": "En-Shuo Liang",
+                        "shortName": "E. Liang",
+                        "fullName": "En-Shuo Liang",
+                        "flag": {
+                          "href": "https://a.espncdn.com/i/teamlogos/countries/500/tpe.png",
+                          "alt": "Chinese Taipei",
+                          "rel": [
+                            "country-flag"
+                          ]
+                        },
+                        "links": [
+                          {
+                            "language": "en-US",
+                            "rel": [
+                              "playercard",
+                              "desktop",
+                              "athlete"
+                            ],
+                            "href": "https://www.espn.com/tennis/player/_/id/3583/en-shuo-liang",
+                            "text": "Player Card",
+                            "shortText": "Player Card",
+                            "isExternal": false,
+                            "isPremium": false,
+                            "isHidden": false
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  "statistics": []
+                }
+              ],
+              "tournamentId": 172,
+              "type": {
+                "id": "4",
+                "text": "Women's Doubles",
+                "slug": "womens-doubles"
+              },
+              "round": {
+                "id": "5",
+                "displayName": "Quarterfinal"
+              },
+              "wasSuspended": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
