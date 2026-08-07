@@ -76,6 +76,11 @@ class ScanResult:
     rows: pd.DataFrame
     displayed: pd.DataFrame
     statuses: list[SourceStatus] = field(default_factory=list)
+    # oportunidades AGREGADAS (una por idea económica, no por bookmaker)
+    opportunities: list = field(default_factory=list)
+    top_picks: list = field(default_factory=list)
+    watchlist: list = field(default_factory=list)
+    watchlist_near: int = 0
 
 
 def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
@@ -344,7 +349,24 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
     if export and len(disp):
         disp.to_csv(export, index=False)
         summary["export"] = export
-    return ScanResult(summary=summary, rows=out, displayed=disp, statuses=statuses)
+
+    # ---------- 7. agregación en oportunidades únicas + TOP PICKS ----------
+    from betbot.picks import aggregate_opportunities, select_top_picks, watchlist
+    opps = aggregate_opportunities(out)
+    top = select_top_picks(opps)
+    wl, wl_near = watchlist(opps)
+    summary["opportunities"] = len(opps)
+    summary["top_picks"] = [{"match": o.match, "market": o.market,
+                             "selection": o.selection_name, "state": o.state,
+                             "best_odds": o.best_odds, "bookmaker": o.best_bookmaker,
+                             "o_min": o.o_min, "ev_cons": o.ev_cons,
+                             "n_books": o.n_books, "start_utc": o.start_utc,
+                             "recommended_primary": o.recommended_primary}
+                            for o in top]
+    summary["watchlist"] = {"n": len(wl), "near_1pct": wl_near}
+    return ScanResult(summary=summary, rows=out, displayed=disp, statuses=statuses,
+                      opportunities=opps, top_picks=top, watchlist=wl,
+                      watchlist_near=wl_near)
 
 
 def _player_registry(cfg: dict) -> set:
@@ -448,9 +470,14 @@ _EXCL_LABELS = {
 
 
 def render_report(res: ScanResult, show_likely: bool = False) -> str:
+    """Informe COMPLETO de diagnóstico (`betbot scan --verbose`)."""
+    from betbot.picks import degraded_banner
     s = res.summary
     lines: list[str] = []
     lines.append(f"BETBOT — {s['date']}  (ventana {s['window_hours']}h)")
+    banner = None if s.get("fail_closed") else degraded_banner(s)
+    if banner:
+        lines.append(banner)
     if s.get("fail_closed"):
         lines.append("")
         lines.append(s.get("fail_closed_message", ""))

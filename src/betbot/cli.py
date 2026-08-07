@@ -217,23 +217,39 @@ def feeds_markets_cmd(cfg: dict, hours: int) -> None:
 @click.option("--min-odds", type=float, default=None, help="Filtro de VISUALIZACIÓN (no de modelo)")
 @click.option("--max-odds", type=float, default=None, help="Filtro de VISUALIZACIÓN (no de modelo)")
 @click.option("--show-watchlist", is_flag=True, help="Incluir 'probable_sin_value'")
-@click.option("--show-rejected", is_flag=True, help="Incluir descartadas y sin_value")
+@click.option("--show-rejected", is_flag=True,
+              help="Incluir descartadas y sin_value (implica --verbose)")
 @click.option("--export", "export_path", type=click.Path(), default=None, help="CSV de señales")
 @click.option("--no-sync-results", is_flag=True,
               help="No sincronizar resultados recientes antes de escanear")
+@click.option("--watch", "watch_flag", is_flag=True,
+              help="Mostrar la watchlist deduplicada (una línea por oportunidad)")
+@click.option("--verbose", is_flag=True,
+              help="Diagnóstico completo: todas las evaluaciones, fuentes y motivos")
 @click.pass_obj
 def scan_cmd(cfg: dict, today_only: bool, hours: int, tours: tuple, markets: tuple,
              min_odds: float | None, max_odds: float | None, show_watchlist: bool,
-             show_rejected: bool, export_path: str | None, no_sync_results: bool) -> None:
-    """Descubre la jornada ATP/WTA, obtiene cuotas y devuelve las señales.
-    Por defecto sincroniza antes los resultados recientes (--no-sync-results lo evita)."""
+             show_rejected: bool, export_path: str | None, no_sync_results: bool,
+             watch_flag: bool, verbose: bool) -> None:
+    """Salida operativa diaria: TOP PICKS (máx. 10 oportunidades ÚNICAS).
+
+    Una oportunidad = (evento, mercado, selección) con todas sus cuotas
+    agrupadas; se muestra solo la mejor cuota ejecutable. Puede devolver 0.
+    Por defecto sincroniza antes los resultados recientes (--no-sync-results
+    lo evita). `--watch` lista la watchlist deduplicada; `--verbose` da el
+    diagnóstico completo de siempre."""
+    from betbot.picks import render_daily
     from betbot.scan import render_report, run_scan
+    verbose = verbose or show_rejected or show_watchlist
     res = run_scan(cfg, hours=24 if today_only else hours,
                    tours=list(tours) or None, markets=list(markets) or None,
                    min_odds=min_odds, max_odds=max_odds,
                    show_likely=show_watchlist, show_rejected=show_rejected,
                    export=export_path, sync_results=not no_sync_results)
-    click.echo(render_report(res))
+    if verbose:
+        click.echo(render_report(res))
+    else:
+        click.echo(render_daily(res, show_watch=watch_flag))
     if export_path and len(res.displayed):
         click.echo(f"\nExportado: {export_path}")
 

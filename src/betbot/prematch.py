@@ -17,7 +17,10 @@ from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 
-from betbot.feeds.base import PREMATCH_STATES, FeedMatch, evidence_of_play
+from collections import Counter
+
+from betbot.feeds.base import (PREMATCH_STATES, FeedMatch, evidence_of_play,
+                               is_placeholder_time)
 
 # Motivos de exclusión (códigos estables; se registran en el ledger)
 EXCLUSION_REASONS = (
@@ -140,6 +143,13 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
         completed_idx = completed_index(cfg, around=now.date())
     if fresh_until is None:
         fresh_until = results_freshness(cfg)
+    # SEGUNDA BARRERA contra horas placeholder (bug real: "Inicio confirmado
+    # 03:59Z"). time_precision lo marca cada adaptador, pero su valor por
+    # defecto es "exact": un adaptador que olvide marcarlo dejaría pasar el
+    # placeholder. La puerta re-verifica SIEMPRE por su cuenta, con los
+    # recuentos de horas compartidas calculados sobre el lote completo.
+    time_counts = Counter(m.scheduled_at_utc for m in matches
+                          if m.scheduled_at_utc is not None)
 
     for m in matches:
         if m.is_doubles or m.is_qualifying or m.level != "main" \
@@ -169,21 +179,43 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
             # una hora suelta sin fecha NO convierte un partido en futuro
             res.add("sin_hora_de_inicio", m, m.time_note)
             continue
-        if m.time_precision != "exact":
-            res.add("hora_provisional", m,
-                    m.time_note or f"precisión de hora = {m.time_precision}")
-            continue
         start = m.scheduled_at_utc
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
+        # re-verificación INDEPENDIENTE del marcado del adaptador
+        ph, ph_why = is_placeholder_time(start, time_counts.get(m.scheduled_at_utc, 1))
+        time_precision = m.time_precision if m.time_precision != "exact" else \
+            ("date_only" if ph else "exact")
+        time_source = m.source
+        xcheck = None
+        if time_precision != "exact":
+            # única vía de rescate: una hora REAL de una fuente independiente,
+            # todavía en el futuro. Sin ella, el partido queda excluido.
+            rescued = False
+            if commence_idx is not None:
+                from betbot.feeds.commence import cross_check
+                xcheck = cross_check(m.pair_key[1:], None, commence_idx, now,
+                                     tolerance_minutes=tol, tournament_hint=m.tournament)
+                if xcheck["verdict"] == "ya_comenzado":
+                    res.add("ya_comenzado", m, xcheck["detail"])
+                    continue
+                if xcheck["verdict"] == "coincide":
+                    start = datetime.fromisoformat(xcheck["commence_utc"])
+                    time_precision = "independiente"
+                    time_source = xcheck.get("source", "")
+                    rescued = True
+            if not rescued:
+                res.add("hora_provisional", m,
+                        (m.time_note or ph_why or f"precisión = {m.time_precision}")
+                        + "; sin hora independiente que la sustituya")
+                continue
         age = m.status_age_hours(now)
         if age is not None and age > max_status_age:
             res.add("estado_calendario_caducado", m, f"observado hace {age:.1f} h")
             continue
 
         # ---- contraste con la hora independiente (The Odds API / espejos) ----
-        xcheck = None
-        if commence_idx is not None:
+        if commence_idx is not None and xcheck is None:
             from betbot.feeds.commence import cross_check
             xcheck = cross_check(m.pair_key[1:], start, commence_idx, now,
                                  tolerance_minutes=tol, tournament_hint=m.tournament)
@@ -218,13 +250,19 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
                          f"independiente que lo corrobore no se puede afirmar prepartido"))
                 continue
 
+        # cinturón final: NUNCA confirmar una hora que siga pareciendo placeholder
+        final_ph, final_why = is_placeholder_time(start, 1)
+        if final_ph and time_precision != "independiente":
+            res.add("hora_provisional", m, final_why)
+            continue
         res.eligible.append(m)
         res.confirmations[m.pair_key] = {
             "source": m.source, "event_id": m.event_id, "status": m.status,
             "start_utc": start.isoformat(), "start_local": m.start_local,
             "start_tz": m.start_tz, "source_updated_at": m.source_updated_at,
             "status_age_h": round(age, 2) if age is not None else None,
-            "time_precision": m.time_precision, "trust_tier": m.trust_tier,
+            "time_precision": time_precision, "time_source": time_source,
+            "trust_tier": m.trust_tier,
             "commence_check": (xcheck or {}).get("verdict", "sin_datos"),
             "commence_utc": (xcheck or {}).get("commence_utc"),
             "commence_event_id": (xcheck or {}).get("event_id"),

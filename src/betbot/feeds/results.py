@@ -140,6 +140,8 @@ class SportradarResults:
                 if lo <= fm.scheduled_at_utc <= hi:
                     out.append(fm)
             d += timedelta(days=1)
+        from betbot.feeds.base import mark_placeholder_times
+        mark_placeholder_times(out)
         st.ok = not errors or bool(out)
         st.n_items = len(out)
         st.error = "; ".join(errors[:3])

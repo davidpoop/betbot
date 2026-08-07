@@ -7,9 +7,26 @@ entrada manual de partidos/cuotas queda como fallback.
 ## Uso normal: descubrimiento automático
 
 ```bash
-betbot scan                 # sincroniza resultados + jornada + cuotas + señales
+betbot scan                 # TOP PICKS: máx. 10 oportunidades ÚNICAS apostables ahora
+betbot scan --watch         # + watchlist deduplicada (vigilar_precio)
+betbot scan --verbose       # diagnóstico completo (todas las evaluaciones y fuentes)
 betbot watch                # escaneo continuo cada 15 min con alertas
 ```
+
+La salida por defecto es OPERATIVA y corta. Una **oportunidad** se define por
+(evento estable, mercado, selección): todas las cuotas de bookmakers de la
+misma idea se agrupan y se muestra solo la **mejor cuota ejecutable** (y la
+segunda como referencia) — una casa distinta NO es una apuesta distinta, y
+`recommended_primary` vive al nivel de la oportunidad agregada. TOP PICKS solo
+admite señales fuertes/normales con todas las puertas prepartido superadas,
+mejor cuota ≥ cuota mínima, sin cuota caducada y sin vetos de calidad/OOD/
+frescura, ordenadas por FUERTE>NORMAL, EV conservador, edge y frescura de la
+cuota. **No hay mínimo: 0 picks es un resultado normal.** La watchlist y el
+ruido (probable_sin_value, sin_value, descartadas, cuotas por casa, orphan
+quotes) no se imprimen por defecto; el ledger sigue registrándolo TODO y
+`--verbose` lo enseña. Si los resultados van con más de 2 días de retraso, la
+cabecera lo grita: `⚠ MODO DEGRADADO`, con la lista de qué depende de esa
+frescura (already_completed, Elo/actividad/OOD, fuentes sin evidencia de juego).
 
 `scan` ejecuta primero `sync-results` (desactivable con `--no-sync-results`) y
 muestra SIEMPRE la frescura de resultados por circuito antes del informe:
