@@ -51,6 +51,7 @@ def _parse_score(raw: str) -> tuple[str, str]:
 class GithubResults:
     """ResultsSource sobre los dos mirrors GitHub (ATP diario, WTA semanal)."""
     name = "github"
+    supported_tours = frozenset({"ATP", "WTA"})
 
     def __init__(self, ttl_seconds: int = 900) -> None:
         self.ttl = ttl_seconds

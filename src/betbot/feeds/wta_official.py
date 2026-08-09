@@ -37,11 +37,12 @@ Cautelas aplicadas:
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from betbot.feeds import cache
 from betbot.feeds.base import (FeedMatch, SourceStatus, classify_level,
-                               evidence_of_play, mark_placeholder_times, strip_seed)
+                               mark_placeholder_times, strip_seed)
 from betbot.schemas import OddsQuote
 
 URL = "https://api.wtatennis.com/tennis/matches/global"
@@ -53,6 +54,167 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; betbot/0.1; herramienta local
 # C=2, W=1 (C y W con duración 00:00:00 y marcador vacío: evidencia insuficiente
 # para mapearlos, así que se quedan en `unknown` y la puerta los excluye).
 MATCH_STATE = {"F": "completed", "P": "live", "U": "scheduled"}
+
+_RESULT_D_RX = re.compile(r"\S\s+d\.?\s+\S")          # "X d Y" / "X d. Y"
+_SET_TOKEN_RX = re.compile(r"^(\d{1,2})-(\d{1,2})(?:\((\d+)\))?$")
+
+
+def _sets_from_scoresets(r: dict) -> list[tuple[int, int]]:
+    """Sets desde ScoreSet{1..5}{A,B}, en orientación A/B del feed."""
+    sets = []
+    for i in range(1, 6):
+        a = str(r.get(f"ScoreSet{i}A", "") or "").strip()
+        b = str(r.get(f"ScoreSet{i}B", "") or "").strip()
+        if not a or not b:
+            break
+        try:
+            sets.append((int(float(a)), int(float(b))))
+        except ValueError:
+            break
+    return sets
+
+
+def _sets_from_scorestring(raw: str) -> list[tuple[int, int]]:
+    """Sets desde ScoreString "6-4,7-6(4)" (orientado al GANADOR, igual que
+    ResultString: verificado en payload real "[6]A. Smith d E. Schoppe
+    6-4,7-6(4)"). Token no parseable -> lista vacía (no se adivina)."""
+    out = []
+    for tok in str(raw or "").replace(" ", "").split(","):
+        if not tok:
+            continue
+        m = _SET_TOKEN_RX.match(tok)
+        if not m:
+            return []
+        out.append((int(m.group(1)), int(m.group(2))))
+    return out
+
+
+def _sets_won(sets: list[tuple[int, int]]) -> tuple[int, int]:
+    """(sets del primer lado, del segundo) contando solo sets COMPLETOS."""
+    w = l = 0
+    for a, b in sets:
+        hi, lo = max(a, b), min(a, b)
+        if (hi >= 6 and hi - lo >= 2) or hi == 7:
+            if a > b:
+                w += 1
+            else:
+                l += 1
+    return w, l
+
+
+def has_completed_evidence(r: dict) -> tuple[bool, str]:
+    """Función ÚNICA de "este partido ya terminó" para calendario, puerta
+    prematch y sync de resultados — nunca reglas distintas por camino.
+
+    Evidencia suficiente (cualquiera):
+    - MatchState == F (código confirmado de finalizado);
+    - ResultString con patrón "X d Y" (la WTA solo lo publica al acabar);
+    - un lado con 2 sets COMPLETOS ganados (Bo3 terminado por definición);
+    - Winner DECIDIDO ("A"/"B"/"1"/"2"; el feed publica "0" hasta que se
+      decide — convención verificada) corroborado por marcador o duración
+      (cubre retiradas con marcador parcial y MatchState rezagado).
+    Un marcador PARCIAL (live) no basta: un partido en juego tiene sets
+    incompletos y Winner="0", y MatchTimeTotal por sí solo tampoco (un
+    partido en juego también acumula duración)."""
+    if str(r.get("MatchState", "")).strip().upper() == "F":
+        return True, "MatchState=F"
+    rs = str(r.get("ResultString", "") or "").strip()
+    if rs and _RESULT_D_RX.search(rs):
+        return True, f"ResultString='{rs[:60]}'"
+    sets = _sets_from_scoresets(r)
+    if sets:
+        w, l = _sets_won(sets)
+        if max(w, l) >= 2:
+            return True, f"{max(w, l)} sets completos ganados en ScoreSet*"
+    ss = _sets_from_scorestring(r.get("ScoreString"))
+    if ss:
+        w, l = _sets_won(ss)
+        if max(w, l) >= 2:
+            return True, "2 sets completos ganados en ScoreString"
+    if str(r.get("Winner", "") or "").strip().upper() in ("A", "B", "1", "2"):
+        dur = str(r.get("MatchTimeTotal", "") or "").strip()
+        if sets or ss or (dur and dur != "00:00:00"):
+            return True, "Winner decidido + marcador/duración"
+    return False, ""
+
+
+def _winner_side(r: dict) -> str:
+    """'A'/'B' o ''. Acepta las DOS convenciones reales del campo Winner
+    ("A"/"B" y "1"/"2" — el consumidor Java verificado hace parseInt) y, si
+    falta, deriva el ganador de los sets completos de ScoreSet*. Con datos
+    contradictorios devuelve '' (no se inventa)."""
+    raw = str(r.get("Winner", "") or "").strip().upper()
+    by_field = {"A": "A", "1": "A", "B": "B", "2": "B"}.get(raw, "")
+    sets = _sets_from_scoresets(r)
+    by_sets = ""
+    if sets:
+        w, l = _sets_won(sets)
+        if w >= 2 and w > l:
+            by_sets = "A"
+        elif l >= 2 and l > w:
+            by_sets = "B"
+    if by_field and by_sets and by_field != by_sets:
+        return ""                    # contradicción: fuera, jamás adivinar
+    return by_field or by_sets
+
+
+def _sets_from_resultstring(raw: str) -> list[tuple[int, int]]:
+    """Último recurso: los tokens de set dentro de ResultString
+    ("[7]I. Swiatek d [10]M. Kostyuk 3-6,6-1,6-2" -> [(3,6),(6,1),(6,2)]),
+    también orientados al ganador. Los nombres no contienen dígito-dígito y
+    las cabezas de serie van entre corchetes, así que no hay falsos tokens."""
+    s = str(raw or "")
+    if not s or not _RESULT_D_RX.search(s):
+        return []
+    toks = re.findall(r"\b(\d{1,2})-(\d{1,2})(?:\((\d+)\))?\b", s)
+    return [(int(a), int(b)) for a, b, _tb in toks]
+
+
+def _tournament_identity(r: dict) -> tuple[str, dict]:
+    """(nombre de torneo, metadatos) desde los campos REALES del payload.
+
+    Busca, por orden: TournamentName, EventTitle, el objeto Tournament
+    anidado (name/title/tournamentGroup), TournamentCity, Venue.name.
+    CourtName NUNCA es un torneo ("Center Court" no identifica nada).
+    Sin metadatos -> ("WTA", {}): un nombre genérico no puede fingir una
+    identificación y la superficie se queda en inferred/unknown."""
+    meta: dict = {}
+    for key in ("TournamentName", "EventTitle"):
+        v = str(r.get(key, "") or "").strip()
+        if v:
+            meta["from"] = key
+            return v, meta
+    t = r.get("Tournament")
+    if isinstance(t, dict):
+        for key in ("name", "Name", "title", "Title", "TournamentName"):
+            v = str(t.get(key, "") or "").strip()
+            if v:
+                meta["from"] = f"Tournament.{key}"
+                return v, meta
+        g = t.get("tournamentGroup")
+        if isinstance(g, dict):
+            for key in ("name", "Name"):
+                v = str(g.get(key, "") or "").strip()
+                if v:
+                    meta["from"] = f"Tournament.tournamentGroup.{key}"
+                    return v, meta
+        for key in ("city", "City"):
+            v = str(t.get(key, "") or "").strip()
+            if v:
+                meta["from"] = f"Tournament.{key}"
+                return v, meta
+    for key in ("TournamentCity",):
+        v = str(r.get(key, "") or "").strip()
+        if v:
+            meta["from"] = key
+            return v, meta
+    venue = r.get("Venue")
+    if isinstance(venue, dict):
+        v = str(venue.get("name", "") or venue.get("Name", "") or "").strip()
+        if v:
+            meta["from"] = "Venue.name"
+            return v, meta
+    return "WTA", meta
 
 
 def normalize_match_state(raw: str | None) -> str:
@@ -89,6 +251,7 @@ def _parse_iso(raw) -> datetime | None:
 class WtaOfficialCalendar:
     name = "wta_official"
     authoritative = True
+    supported_tours = frozenset({"WTA"})   # SOLO WTA: jamás cubre ATP
     markets: list[str] = []
 
     def __init__(self, ttl_seconds: int = 900) -> None:
@@ -156,8 +319,7 @@ class WtaOfficialCalendar:
             if lo and hi and not (lo <= ref <= hi):
                 n_skipped += 1
                 continue
-            tournament = str(r.get("TournamentName") or r.get("EventTitle")
-                             or r.get("CourtName") or "WTA").strip()
+            tournament, _tmeta = _tournament_identity(r)
             rnd = str(r.get("RoundID") or "").strip()
             p1, p2 = strip_seed(p1), strip_seed(p2)
             a, b = sorted([canonical_key(p1), canonical_key(p2)])
@@ -165,9 +327,11 @@ class WtaOfficialCalendar:
             if str(r.get("DrawLevelType", "")).strip().upper() in ("I", "ITF"):
                 level = "itf"
 
-            # el marcador se impone al código de estado
+            # el marcador se impone al código de estado — con la MISMA regla
+            # que usa fetch_results (has_completed_evidence): un marcador
+            # PARCIAL de un partido en juego ya no fuerza `completed`.
             status = normalize_match_state(r.get("MatchState"))
-            played, why = evidence_of_play(r)
+            played, why = has_completed_evidence(r)
             if played and status not in ("completed", "walkover"):
                 status = "completed"
 
@@ -185,7 +349,7 @@ class WtaOfficialCalendar:
                         f"cota inferior, no una hora de inicio")
             if played:
                 note = (note + "; " if note else "") + \
-                    "evidencia de partido jugado: " + ", ".join(why)
+                    "evidencia de partido jugado: " + why
 
             # identidad ESTABLE: torneo + año + hueco del cuadro + pareja.
             # Sin la fecha: un cambio de horario NO puede crear un evento nuevo
@@ -238,9 +402,15 @@ class WtaOfficialCalendar:
 
     @classmethod
     def parse_results(cls, data, since, until) -> tuple[list[dict], int, int]:
-        """Partidos MatchState=F con marcador por sets -> filas de la plantilla
-        manual (marcador orientado al GANADOR). Sin marcador completo o sin
-        ganador claro, la fila se descarta: nunca se inventa un resultado."""
+        """Partidos con evidencia de FINALIZADO -> filas de la plantilla manual
+        (marcador orientado al GANADOR).
+
+        La evidencia es la MISMA que usa el calendario: `has_completed_evidence`
+        (MatchState=F | ResultString "X d Y" | 2 sets completos ganados). El
+        feed real publica el ganador como "1"/"2" (no "A"/"B") y a veces solo
+        trae ResultString/ScoreString sin ScoreSet*: ambos casos entran ahora.
+        Sin ganador claro o sin ningún marcador, la fila se descarta: nunca se
+        inventa un resultado, y un marcador parcial (live) jamás cuenta."""
         rows_in = data
         if isinstance(data, dict):
             for k in ("Matches", "matches", "data"):
@@ -253,6 +423,7 @@ class WtaOfficialCalendar:
             rows_in = []
         out: list[dict] = []
         n_raw = n_skipped = 0
+        from betbot.tournaments import resolve_surface
         for r in rows_in:
             if not isinstance(r, dict):
                 continue
@@ -260,13 +431,14 @@ class WtaOfficialCalendar:
             if str(r.get("DrawMatchType", "S")).strip().upper() not in ("S", ""):
                 n_skipped += 1
                 continue
-            if str(r.get("MatchState", "")).strip().upper() != "F":
+            done, _why = has_completed_evidence(r)
+            if not done:
                 n_skipped += 1
                 continue
-            winner_side = str(r.get("Winner", "")).strip().upper()
+            winner_side = _winner_side(r)
             if winner_side not in ("A", "B"):
                 n_skipped += 1
-                continue
+                continue                      # sin ganador claro: no se inventa
             pA = _player_name(r.get("PlayerNameFirstA"), r.get("PlayerNameLastA"))
             pB = _player_name(r.get("PlayerNameFirstB"), r.get("PlayerNameLastB"))
             if not pA or not pB:
@@ -276,30 +448,26 @@ class WtaOfficialCalendar:
             if ref is None or not (since <= ref.date() <= until):
                 n_skipped += 1
                 continue
-            # marcador por sets orientado al ganador (campos verificados del DTO)
-            sets = []
-            for i in range(1, 6):
-                a, b = str(r.get(f"ScoreSet{i}A", "") or "").strip(), \
-                    str(r.get(f"ScoreSet{i}B", "") or "").strip()
-                if not a or not b:
-                    break
-                try:
-                    ga, gb = int(float(a)), int(float(b))
-                except ValueError:
-                    break
-                sets.append((ga, gb) if winner_side == "A" else (gb, ga))
+            # marcador orientado al ganador: ScoreSet* (orientación A/B, se
+            # reorienta) > ScoreString > tokens de ResultString (estos dos ya
+            # vienen orientados al ganador)
+            sets = _sets_from_scoresets(r)
+            if sets and winner_side == "B":
+                sets = [(b, a) for a, b in sets]
+            if not sets:
+                sets = _sets_from_scorestring(r.get("ScoreString"))
+            if not sets:
+                sets = _sets_from_resultstring(r.get("ResultString"))
             if not sets:
                 n_skipped += 1
-                continue                      # F sin marcador: no se inventa
+                continue                      # finalizado sin marcador: no se inventa
             texto = " ".join(str(r.get(k, "") or "") for k in
                              ("ResultString", "ScoreString", "FreeText")).lower()
             retired = "ret" in texto or "retir" in texto
             winner, loser = (pA, pB) if winner_side == "A" else (pB, pA)
-            tournament = str(r.get("TournamentName") or r.get("EventTitle")
-                             or "WTA").strip()
-            from betbot.tournaments import resolve_surface
+            tournament, _tmeta = _tournament_identity(r)
             surf, _src, _info = resolve_surface("WTA", tournament)
-            out.append({
+            row = {
                 "date": ref.date().isoformat(), "tour": "WTA",
                 "tournament": tournament,
                 "surface": surf or "", "indoor": "false",
@@ -310,5 +478,14 @@ class WtaOfficialCalendar:
                 "status": "retired" if retired else "completed",
                 "_level": "main" if str(r.get("DrawLevelType", "M")).strip().upper()
                           not in ("Q", "I", "ITF") else "other",
-            })
+            }
+            # ranking oficial si el payload lo trae (mismos nombres de columna
+            # que el resto de fuentes de resultados; ausente -> vacío)
+            rank_a = str(r.get("PlayerRankA", "") or r.get("RankA", "") or "").strip()
+            rank_b = str(r.get("PlayerRankB", "") or r.get("RankB", "") or "").strip()
+            if rank_a.isdigit() or rank_b.isdigit():
+                w_rank, l_rank = (rank_a, rank_b) if winner_side == "A" else (rank_b, rank_a)
+                row["winner_rank"] = w_rank if w_rank.isdigit() else ""
+                row["loser_rank"] = l_rank if l_rank.isdigit() else ""
+            out.append(row)
         return out, n_raw, n_skipped

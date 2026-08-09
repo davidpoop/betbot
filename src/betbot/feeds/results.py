@@ -56,6 +56,9 @@ def sportradar_status(status_block: dict) -> str:
 
 
 class ResultsSource(Protocol):
+    # cada adaptador declara además `supported_tours` (frozenset de "ATP"/"WTA"):
+    # la matriz de capacidades solo puede listar una fuente bajo los tours que
+    # declara, nunca inferir cobertura de un tour porque el fetch global trajo datos
     name: str
 
     def fetch_results(self, since: date, until: date) -> tuple[list[dict], SourceStatus]: ...
@@ -74,6 +77,7 @@ class SportradarResults:
     Requiere SPORTRADAR_API_KEY (plan trial o de pago). Solo lectura.
     """
     name = "sportradar"
+    supported_tours = frozenset({"ATP", "WTA"})
     BASE = "https://api.sportradar.com/tennis/trial/v3/en"
 
     def __init__(self, api_key: str | None = None, ttl_seconds: int = 900) -> None:

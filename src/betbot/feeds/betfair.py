@@ -39,6 +39,7 @@ _BACKOFF = [1.0, 2.0, 4.0]
 
 class BetfairExchangeProvider:
     name = "betfair"
+    supported_tours = frozenset({"ATP", "WTA"})
     bookmaker = "betfair_es"
 
     def __init__(self, app_key: str | None = None, username: str | None = None,

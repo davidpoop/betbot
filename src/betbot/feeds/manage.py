@@ -131,21 +131,29 @@ def feeds_matrix(cfg: dict, hours: int = 48) -> str:
     for src in cals:
         if not getattr(src, "authoritative", False):
             continue
+        # una fuente solo puede aparecer bajo los tours que DECLARA cubrir:
+        # que el fetch global traiga datos jamás implica cobertura del otro tour
+        # (wta_official salía como calendario ATP por esta inferencia)
+        sup = set(getattr(src, "supported_tours", ("ATP", "WTA")))
         try:
             ms, st = src.fetch_matches(hours)
         except Exception as exc:  # noqa: BLE001
             ms, st = [], SourceStatus(name=getattr(src, "name", "?"), ok=False,
                                       error=str(exc))
         cls = classify_status({"ok": st.ok, "error": st.error, "n": st.n_items})
-        tours = {m.tour for m in ms}
         for t in ("ATP", "WTA"):
+            if t not in sup:
+                continue
             n_t = sum(1 for m in ms if m.tour == t)
-            covers = t in tours
             cal_status[t].append(
-                f"{st.name}: {cls}" + (f" ({n_t} partidos)" if covers else ""))
-    # --- resultados ---
+                f"{st.name}: {cls}" + (f" ({n_t} partidos)" if n_t else ""))
+    # --- resultados (fallbacks también filtrados por tour declarado) ---
     fresh = local_freshness(cfg)
-    res_names = [getattr(s, "name", "?") for s in default_results_sources(cfg)]
+    res_srcs = default_results_sources(cfg)
+
+    def res_names_for(t: str) -> list[str]:
+        return [getattr(s, "name", "?") for s in res_srcs
+                if t in set(getattr(s, "supported_tours", ("ATP", "WTA")))]
     # --- rankings ---
     rank_status = {}
     for t in ("ATP", "WTA"):
@@ -171,7 +179,7 @@ def feeds_matrix(cfg: dict, hours: int = 48) -> str:
             primary = ("wta_official (mismo día)" if t == "WTA"
                        else "github/TML (diario si upstream publica)")
             return (f"hasta {f} ({age}d) · primaria {primary} · "
-                    f"fallbacks {', '.join(res_names)}")
+                    f"fallbacks {', '.join(res_names_for(t))}")
         if cap == "rankings":
             return rank_status[t] + " · derived_from_results"
         if cap == "surface":

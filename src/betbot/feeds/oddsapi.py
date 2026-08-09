@@ -52,6 +52,7 @@ def _short(full: str) -> str:
 
 class OddsApiFeed:
     name = "oddsapi"
+    supported_tours = frozenset({"ATP", "WTA"})
     markets = ["match_winner"]
     authoritative = True         # /events publica id + commence_time + jugadores
 

@@ -93,6 +93,7 @@ def _parse_start(ev: dict) -> datetime | None:
 
 class TheSportsDBCalendar:
     name = "thesportsdb"
+    supported_tours = frozenset({"ATP", "WTA"})
     authoritative = True         # publica id + fecha-hora completa + estado
     markets: list[str] = []
 

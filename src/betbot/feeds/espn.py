@@ -119,6 +119,7 @@ def _competitor_name(c: dict) -> tuple[str, bool]:
 
 class EspnFeed:
     name = "espn"
+    supported_tours = frozenset({"ATP", "WTA"})
     markets = ["match_winner"]
     authoritative = True         # publica id + hora de inicio + estado
 

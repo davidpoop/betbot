@@ -32,6 +32,7 @@ class GithubTEFeed:
     filas salen marcadas como no autoritativas / estado desconocido / sin hora
     de inicio, de modo que la puerta prepartido las rechaza siempre."""
     name = "github_te"
+    supported_tours = frozenset({"ATP", "WTA"})
     markets = ["match_winner"]
     authoritative = False        # ← nunca puede confirmar un partido prepartido
 
