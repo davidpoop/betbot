@@ -166,6 +166,15 @@ def feeds_calendar_cmd(cfg: dict, hours: int) -> None:
     click.echo(feeds_calendar(cfg, hours=hours))
 
 
+@feeds_group.command("matrix")
+@click.option("--hours", type=int, default=48, show_default=True)
+@click.pass_obj
+def feeds_matrix_cmd(cfg: dict, hours: int) -> None:
+    """Matriz de capacidades ATP/WTA (fuente primaria, fallbacks, frescura, estado)."""
+    from betbot.feeds.manage import feeds_matrix
+    click.echo(feeds_matrix(cfg, hours=hours))
+
+
 @feeds_group.command("wta-raw")
 @click.option("--match-id", "match_ids", multiple=True,
               help="MatchID concreto a volcar (repetible; p.ej. LS052)")

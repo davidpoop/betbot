@@ -58,13 +58,15 @@ def default_sources(cfg: dict) -> tuple[list[CalendarSource], list[OddsSource]]:
     te = GithubTEFeed(ttl_seconds=ttl)
     es = EspnFeed(ttl_seconds=ttl)
     oa = OddsApiFeed(api_key=fcfg.get("odds_api_key"), ttl_seconds=ttl)
-    cal_map = {"espn": es,
+    cal_map = {"espn": es, "oddsapi": oa,
                "thesportsdb": TheSportsDBCalendar(api_key=fcfg.get("thesportsdb_key"),
                                                   ttl_seconds=ttl),
                "wta_official": WtaOfficialCalendar(ttl_seconds=ttl),
                "sportradar": SportradarResults(ttl_seconds=ttl)}
     odds_map = {"github_te": te, "espn": es, "oddsapi": oa}
-    cals = [cal_map[n] for n in fcfg.get("calendar_order", ["espn"]) if n in cal_map]
+    cals = [cal_map[n] for n in fcfg.get(
+        "calendar_order", ["wta_official", "oddsapi", "thesportsdb", "espn"])
+        if n in cal_map]
     odds = [odds_map[n] for n in fcfg.get("odds_order", ["github_te", "espn", "oddsapi"])
             if n in odds_map]
     return cals, odds
@@ -234,13 +236,27 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
             _log_structured_prices(cfg, struct_prices)
 
     # ---------- 4. screener (modelos congelados; ledger completo) ----------
+    # superficie por jerarquía de confianza: official (la publica la fuente) >
+    # tournament_registry (torneo inequívoco) > inferred (heurística, CON aviso)
+    from betbot.tournaments import resolve_surface
     day_matches: list[DayMatch] = []
     est_surface_keys: set[tuple] = set()
+    surface_sources: dict[str, int] = {"official": 0, "tournament_registry": 0,
+                                       "inferred": 0}
+    surface_source_by_pair: dict[tuple, str] = {}
     for m in eligible:
         # la fecha de análisis SIEMPRE es la del inicio confirmado en UTC
         mdate = m.scheduled_at_utc.date() if m.scheduled_at_utc else m.date
-        surface, estimated = (m.surface, False) if m.surface else guess_surface(m.tournament, mdate)
-        if estimated:
+        if m.surface:
+            surface, ssrc = m.surface, "official"
+        else:
+            surface, ssrc, _info = resolve_surface(m.tour, m.tournament)
+            if surface is None:
+                surface, _est = guess_surface(m.tournament, mdate)
+                ssrc = "inferred"
+        surface_sources[ssrc] = surface_sources.get(ssrc, 0) + 1
+        surface_source_by_pair[m.pair_key] = ssrc
+        if ssrc == "inferred":
             est_surface_keys.add(m.pair_key)
         day_matches.append(DayMatch(date=mdate, tour=m.tour, tournament=m.tournament,
                                     surface=surface, indoor=m.indoor, round=m.round,
@@ -261,7 +277,12 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
                          ("calendar_status_age_h", "status_age_h"),
                          ("event_id", "event_id")):
             out[col] = out["match"].map(lambda lbl, k=key: conf_by_label.get(lbl, {}).get(k))
-        # aviso de superficie estimada como reason
+        # aviso de superficie estimada SOLO cuando es heurística (inferred);
+        # official y tournament_registry no lo llevan, pero su origen queda
+        # registrado por fila
+        ssrc_by_label = {m.label: surface_source_by_pair.get(m.pair_key, "inferred")
+                         for m in eligible}
+        out["surface_source"] = out["match"].map(lambda lbl: ssrc_by_label.get(lbl, ""))
         est_matches = {m.label for m in eligible if m.pair_key in est_surface_keys}
         mask = out["match"].isin(est_matches) & (out["state"] != "descartada")
         out.loc[mask, "reasons"] = out.loc[mask, "reasons"].map(
@@ -321,6 +342,8 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
         "markets_missing_from_sources": [m for m in SUPPORTED_MARKETS if m not in markets_available],
         "stale_discarded": n_stale,
         "states": state_counts,
+        "surface_sources": surface_sources,
+        "rankings_status": _rankings_status(cfg),
         "results_freshness": results_freshness,
         "sync": sync_report,
         "structured": structured_info,
@@ -340,9 +363,10 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
             for r, ms in gres.excluded.items() if ms and r != "no_main_tour"},
         "orphan_quotes": n_orphan_quotes,
         "confirmations": {f"{k[1]}__{k[2]}": v for k, v in gres.confirmations.items()},
-        "sources": [{"name": s.name, "ok": s.ok, "n": s.n_items, "error": s.error,
-                     "data_timestamp": s.data_timestamp, "notes": s.notes,
-                     "authoritative": s.authoritative, "orphan": s.n_orphan}
+        "sources": [dict(name=s.name, ok=s.ok, n=s.n_items, error=s.error,
+                         data_timestamp=s.data_timestamp, notes=s.notes,
+                         authoritative=s.authoritative, orphan=s.n_orphan,
+                         **{"class": _classify(s)})
                     for s in statuses],
         "warnings": warns,
     }
@@ -367,6 +391,31 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
     return ScanResult(summary=summary, rows=out, displayed=disp, statuses=statuses,
                       opportunities=opps, top_picks=top, watchlist=wl,
                       watchlist_near=wl_near)
+
+
+def _classify(s: SourceStatus) -> str:
+    from betbot.feeds.manage import classify_status
+    return classify_status({"ok": s.ok, "error": s.error, "n": s.n_items})
+
+
+def _rankings_status(cfg: dict) -> dict:
+    """Estado de los rankings cargables AHORA (fecha efectiva, tamaño, edad)."""
+    from betbot.config import resolve_path
+    from betbot.ingest.rankings import load_rankings
+    out = {}
+    today = date.today()
+    for tour in ("ATP", "WTA"):
+        try:
+            rk = load_rankings(resolve_path(cfg, "manual_dir"), tour, today,
+                               int(cfg.get("rankings", {}).get("max_age_days", 45)))
+            out[tour] = {"published": str(rk.published) if rk.published else None,
+                         "n": len(rk.by_player),
+                         "age_days": (today - rk.published).days if rk.published else None,
+                         "warnings": rk.warnings[:2]}
+        except Exception as exc:  # noqa: BLE001
+            out[tour] = {"published": None, "n": 0, "age_days": None,
+                         "warnings": [str(exc)]}
+    return out
 
 
 def _player_registry(cfg: dict) -> set:

@@ -44,10 +44,15 @@ def _row_error(i: int, msg: str) -> dict:
 
 
 def prepare_rows(df: pd.DataFrame, *, registry: set, known_ids: set,
-                 source_label: str, allow_new: bool | str, today: date
+                 source_label: str, allow_new: bool | str, today: date,
+                 collect_dups: list | None = None
                  ) -> tuple[list[dict], list[dict], list[dict]]:
     """Núcleo de validación por filas (compartido por la importación manual y la
-    sincronización automática). Devuelve (aceptadas, rechazadas, cuarentena)."""
+    sincronización automática). Devuelve (aceptadas, rechazadas, cuarentena).
+
+    `collect_dups`: si se pasa una lista, las filas VÁLIDAS rechazadas por ser
+    duplicado contra el dataset se depositan ahí ya parseadas — el sync las usa
+    para enriquecer (ranks) o corregir (resultado) filas manuales existentes."""
     accepted: list[dict] = []
     rejected: list[dict] = []
     quarantined: list[dict] = []
@@ -129,16 +134,33 @@ def prepare_rows(df: pd.DataFrame, *, registry: set, known_ids: set,
         a_key, b_key = (w_key, l_key) if w_key < l_key else (l_key, w_key)
         a_is_winner = a_key == w_key
         match_id = f"{tour}_{d.isoformat()}_{a_key}__{b_key}"
-        if match_id in seen_in_file:
+        is_dup_file = match_id in seen_in_file
+        is_dup_dataset = (not is_dup_file) and match_id in known_ids
+        if is_dup_file:
             rejected.append(_row_error(rownum, f"duplicado dentro del fichero: {match_id}"))
             continue
-        if match_id in known_ids:
-            rejected.append(_row_error(rownum, f"duplicado (ya existe en el dataset): {match_id}"))
-            continue
-        seen_in_file.add(match_id)
+
+        # rank/puntos del momento del partido, si la fuente los publica (TML y
+        # TennisCourtLog los traen); alimentan el ranking derivado automático
+        def _num(v):
+            try:
+                x = float(v)
+                return x if x > 0 else None
+            except (TypeError, ValueError):
+                return None
+        w_rank, l_rank = _num(r.get("winner_rank")), _num(r.get("loser_rank"))
+        w_pts, l_pts = _num(r.get("winner_rank_points")), _num(r.get("loser_rank_points"))
 
         set1_w = ps.set1_w if ps.set1_completed else None
-        accepted.append({
+        target = accepted
+        if is_dup_dataset:
+            rejected.append(_row_error(rownum, f"duplicado (ya existe en el dataset): {match_id}"))
+            if collect_dups is None:
+                continue
+            target = collect_dups           # fila parseada para enriquecer/corregir
+        else:
+            seen_in_file.add(match_id)
+        target.append({
             "tour": tour, "date": d, "tournament": str(r.get("tournament", "")).strip(),
             "series": "", "surface": surface,
             "indoor": str(r.get("indoor", "false")).strip().lower() in ("true", "1", "si", "sí", "yes"),
@@ -153,7 +175,10 @@ def prepare_rows(df: pd.DataFrame, *, registry: set, known_ids: set,
             "games_a": ps.games_w if a_is_winner else ps.games_l,
             "games_b": ps.games_l if a_is_winner else ps.games_w,
             "set1_winner_a": (set1_w if a_is_winner else 1 - set1_w) if set1_w is not None else None,
-            "rank_a": None, "rank_b": None, "pts_a": None, "pts_b": None,
+            "rank_a": w_rank if a_is_winner else l_rank,
+            "rank_b": l_rank if a_is_winner else w_rank,
+            "pts_a": w_pts if a_is_winner else l_pts,
+            "pts_b": l_pts if a_is_winner else w_pts,
             "odds_json": "{}",
             "source": source_label,
             "match_id": match_id,

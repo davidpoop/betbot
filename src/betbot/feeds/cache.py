@@ -27,19 +27,26 @@ def get_json(url: str, ttl_seconds: int = 300, timeout: int = 30,
     if cpath.exists() and (time.time() - cpath.stat().st_mtime) < ttl_seconds:
         return json.loads(cpath.read_text(encoding="utf-8"))
     last_exc: Exception | None = None
+    n_tries = 0
     for i, wait in enumerate([0.0] + _BACKOFF):
         if wait:
             time.sleep(wait)
+        n_tries += 1
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "betbot/0.1"} | (headers or {}))
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             cpath.write_text(json.dumps(data), encoding="utf-8")
             return data
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-                json.JSONDecodeError, OSError) as exc:
+        except urllib.error.HTTPError as exc:
             last_exc = exc
-    raise RuntimeError(f"fuente inaccesible tras {1 + len(_BACKOFF)} intentos: {url} ({last_exc})")
+            # 4xx (salvo 429) es ESTRUCTURAL: reintentar con backoff es inútil
+            # (caso real: ESPN 403 sistemático x4 intentos x2 ligas por scan)
+            if 400 <= exc.code < 500 and exc.code != 429:
+                raise RuntimeError(f"HTTP {exc.code} (estructural, sin reintentos): {url}")
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            last_exc = exc
+    raise RuntimeError(f"fuente inaccesible tras {n_tries} intentos: {url} ({last_exc})")
 
 
 def get_text(url: str, ttl_seconds: int = 300, timeout: int = 60,
@@ -50,15 +57,21 @@ def get_text(url: str, ttl_seconds: int = 300, timeout: int = 60,
     if cpath.exists() and (time.time() - cpath.stat().st_mtime) < ttl_seconds:
         return cpath.read_text(encoding="utf-8")
     last_exc: Exception | None = None
+    n_tries = 0
     for wait in [0.0] + _BACKOFF:
         if wait:
             time.sleep(wait)
+        n_tries += 1
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "betbot/0.1"} | (headers or {}))
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 text = resp.read().decode("utf-8", errors="replace")
             cpath.write_text(text, encoding="utf-8")
             return text
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+        except urllib.error.HTTPError as exc:
             last_exc = exc
-    raise RuntimeError(f"fuente inaccesible tras {1 + len(_BACKOFF)} intentos: {url} ({last_exc})")
+            if 400 <= exc.code < 500 and exc.code != 429:
+                raise RuntimeError(f"HTTP {exc.code} (estructural, sin reintentos): {url}")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_exc = exc
+    raise RuntimeError(f"fuente inaccesible tras {n_tries} intentos: {url} ({last_exc})")

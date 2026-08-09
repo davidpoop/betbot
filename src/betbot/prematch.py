@@ -113,6 +113,15 @@ def find_completed(m: FeedMatch, idx: dict[tuple, list[dict]],
 # puerta principal
 # ---------------------------------------------------------------------------
 
+def _same_provider_family(a: str, b: str) -> bool:
+    """True si dos nombres de fuente pertenecen al mismo proveedor de datos
+    (p.ej. 'oddsapi' y 'odds_api_mirror:...': ambos The Odds API)."""
+    def fam(s: str) -> str:
+        s = (s or "").lower().replace("-", "_")
+        return "oddsapi" if ("oddsapi" in s or "odds_api" in s) else s
+    return bool(a and b) and fam(a) == fam(b)
+
+
 def results_freshness(cfg: dict) -> dict:
     """Hasta qué día tenemos resultados por circuito."""
     try:
@@ -241,7 +250,13 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
         # ---- una fuente sin evidencia de juego exige resultados frescos ----
         if m.trust_tier != "live_verified":
             f = fresh_until.get(m.tour)
-            corroborated = bool(xcheck and xcheck["verdict"] == "coincide")
+            # la corroboración debe ser INDEPENDIENTE: si el calendario ES de la
+            # familia The Odds API, contrastarlo con el índice de commence-time
+            # (espejos del mismo proveedor) sería circular y no cuenta
+            same_family = _same_provider_family(m.source,
+                                                (xcheck or {}).get("source", ""))
+            corroborated = bool(xcheck and xcheck["verdict"] == "coincide"
+                                and not same_family)
             if not corroborated and (f is None or f < now.date()):
                 res.add("results_feed_stale_pre_match_unverified", m,
                         (f"fuente '{m.source}' publica estado sin evidencia de juego y "

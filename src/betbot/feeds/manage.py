@@ -11,6 +11,30 @@ from datetime import datetime, timezone
 from betbot.feeds.base import SourceStatus
 
 
+STATUS_CLASSES = ("OK_CON_DATOS", "OK_SIN_COBERTURA", "INACTIVO_CONFIG",
+                  "FALLO_TEMPORAL", "FALLO_ESTRUCTURAL")
+
+
+def classify_status(entry) -> str:
+    """Semántica honesta del estado de una fuente. 'OK 0 items' NO es cobertura:
+    se distingue OK_SIN_COBERTURA. Sin credencial configurada es INACTIVO_CONFIG
+    (no un fallo del proveedor). Un 4xx estructural (403/404) no es temporal."""
+    ok = bool(entry.get("ok") if isinstance(entry, dict) else entry.ok)
+    err = str((entry.get("error") if isinstance(entry, dict) else entry.error) or "")
+    n = int((entry.get("n") if isinstance(entry, dict) else entry.n_items) or 0)
+    low = err.lower()
+    if not ok or err:
+        if "inactivo" in low or "sin betbot_" in low or "sin sportradar" in low \
+                or "_key" in low or "credencial" in low:
+            return "INACTIVO_CONFIG"
+        if "estructural" in low or "http 403" in low or "http 404" in low \
+                or "403 forbidden" in low or "response 403" in low:
+            return "FALLO_ESTRUCTURAL"
+        if not ok:
+            return "FALLO_TEMPORAL"
+    return "OK_CON_DATOS" if n > 0 else "OK_SIN_COBERTURA"
+
+
 def default_structured_providers(cfg: dict) -> list:
     from betbot.feeds.betfair import BetfairExchangeProvider
     order = cfg.get("feeds", {}).get("structured_odds_order", ["betfair"])
@@ -52,8 +76,10 @@ def feeds_test(cfg: dict) -> dict:
     report: dict = {"tested_at": datetime.now(timezone.utc).isoformat(), "sources": []}
 
     def add(role: str, st: SourceStatus) -> None:
-        report["sources"].append({"role": role, "name": st.name, "ok": st.ok,
-                                  "n": st.n_items, "error": st.error, "notes": st.notes})
+        entry = {"role": role, "name": st.name, "ok": st.ok,
+                 "n": st.n_items, "error": st.error, "notes": st.notes}
+        entry["class"] = classify_status(entry)
+        report["sources"].append(entry)
 
     cals, odds = default_sources(cfg)
     matches = []
@@ -84,6 +110,93 @@ def feeds_test(cfg: dict) -> dict:
             st = SourceStatus(name=getattr(prov, "name", "?"), ok=False, error=str(exc))
         add("structured_odds", st)
     return report
+
+
+def feeds_matrix(cfg: dict, hours: int = 48) -> str:
+    """Matriz de capacidades ATP/WTA: qué fuente cubre cada celda, con qué
+    frescura y en qué estado REAL (probes de solo lectura en vivo)."""
+    from datetime import date, datetime, timezone
+
+    from betbot.ingest.rankings import load_rankings
+    from betbot.config import resolve_path
+    from betbot.scan import default_sources
+    from betbot.sync import default_results_sources, local_freshness
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    L = [f"MATRIZ DE CAPACIDADES — {now.isoformat(timespec='seconds')}", ""]
+
+    # --- calendario (probe en vivo por fuente) ---
+    cals, odds_srcs = default_sources(cfg)
+    cal_status: dict[str, list[str]] = {"ATP": [], "WTA": []}
+    for src in cals:
+        if not getattr(src, "authoritative", False):
+            continue
+        try:
+            ms, st = src.fetch_matches(hours)
+        except Exception as exc:  # noqa: BLE001
+            ms, st = [], SourceStatus(name=getattr(src, "name", "?"), ok=False,
+                                      error=str(exc))
+        cls = classify_status({"ok": st.ok, "error": st.error, "n": st.n_items})
+        tours = {m.tour for m in ms}
+        for t in ("ATP", "WTA"):
+            n_t = sum(1 for m in ms if m.tour == t)
+            covers = t in tours
+            cal_status[t].append(
+                f"{st.name}: {cls}" + (f" ({n_t} partidos)" if covers else ""))
+    # --- resultados ---
+    fresh = local_freshness(cfg)
+    res_names = [getattr(s, "name", "?") for s in default_results_sources(cfg)]
+    # --- rankings ---
+    rank_status = {}
+    for t in ("ATP", "WTA"):
+        rk = load_rankings(resolve_path(cfg, "manual_dir"), t, today,
+                           int(cfg.get("rankings", {}).get("max_age_days", 45)))
+        rank_status[t] = (f"efectivos {rk.published} ({len(rk.by_player)} jugadoras/es)"
+                          if rk.published else "AUSENTES (fallback Elo)")
+        if rk.warnings:
+            rank_status[t] += " ⚠ " + "; ".join(rk.warnings[:1])
+    # --- cuotas ---
+    import os
+    odds_ok = bool(os.environ.get("BETBOT_ODDS_API_KEY")
+                   or cfg.get("feeds", {}).get("odds_api_key"))
+    bf_ok = all(os.environ.get(v) for v in
+                ("BETFAIR_APP_KEY", "BETFAIR_USERNAME", "BETFAIR_PASSWORD"))
+
+    def cell(cap: str, t: str) -> str:
+        if cap == "calendar":
+            return " · ".join(cal_status[t]) or "SIN FUENTE"
+        if cap == "results":
+            f = fresh.get(t)
+            age = (today - f).days if f else None
+            primary = ("wta_official (mismo día)" if t == "WTA"
+                       else "github/TML (diario si upstream publica)")
+            return (f"hasta {f} ({age}d) · primaria {primary} · "
+                    f"fallbacks {', '.join(res_names)}")
+        if cap == "rankings":
+            return rank_status[t] + " · derived_from_results"
+        if cap == "surface":
+            return "official > tournament_registry > inferred(con aviso)"
+        if cap == "moneyline":
+            base = "github_te (sin clave, 6h)"
+            return base + (" + oddsapi multioperador [configured]" if odds_ok
+                           else " · oddsapi INACTIVO_CONFIG (falta BETBOT_ODDS_API_KEY)")
+        if cap == "set_odds":
+            return ("betfair listo [configured]" if bf_ok else
+                    "NOT OFFERED · betfair integrado pero INACTIVO_CONFIG (opcional)")
+        return "?"
+
+    for cap, label in (("calendar", "calendario"), ("results", "resultados"),
+                       ("rankings", "rankings"), ("surface", "superficie"),
+                       ("moneyline", "cuotas moneyline"), ("set_odds", "cuotas de sets")):
+        L.append(f"{label.upper()}")
+        for t in ("ATP", "WTA"):
+            L.append(f"  {t}: {cell(cap, t)}")
+        L.append("")
+    L.append("Clases: OK_CON_DATOS / OK_SIN_COBERTURA / INACTIVO_CONFIG / "
+             "FALLO_TEMPORAL / FALLO_ESTRUCTURAL")
+    L.append("Una fuente OPCIONAL inactiva (sportradar/betfair sin credencial) no es "
+             "un error operacional.")
+    return "\n".join(L)
 
 
 def feeds_calendar(cfg: dict, hours: int = 48) -> str:

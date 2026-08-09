@@ -201,12 +201,15 @@ def test_wta_not_before_time_never_confirms(cfg):
 
 # ------------------------------------------------------------- integración
 
-def test_fallback_order_and_espn_first(cfg):
+def test_fallback_order_espn_degraded_to_last(cfg):
+    """ESPN queda DEGRADADA al final (403 estructural observado también desde
+    conexiones domésticas); wta_official y oddsapi encabezan el calendario."""
     from betbot.scan import default_sources
     cals, odds = default_sources(cfg)
     names = [c.name for c in cals]
-    assert names[0] == "espn"                       # ESPN sigue siendo la primera
-    assert "thesportsdb" in names and "wta_official" in names
+    assert names[0] == "wta_official"
+    assert names.index("espn") > names.index("thesportsdb")   # espn es último recurso
+    assert "oddsapi" in names                       # vía ATP con BETBOT_ODDS_API_KEY
     assert all(getattr(c, "authoritative", False) for c in cals)
     assert "github_te" not in names                 # nunca como calendario
     assert "github_te" in [o.name for o in odds]    # sí como fuente de cuotas

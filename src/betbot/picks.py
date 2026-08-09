@@ -250,18 +250,49 @@ def render_daily(res, show_watch: bool = False) -> str:
     banner = degraded_banner(s)
     if banner:
         L.append(banner)
-    # estado compacto de fuentes
-    cals = [f"{x['name']} {'OK' if x['ok'] else 'no disponible'}"
+    # ---- sección "Datos": estado honesto por capacidad, sin verde artificial ----
+    L.append("Datos:")
+    fresh = s.get("results_freshness") or {}
+    parts = []
+    for t in ("ATP", "WTA"):
+        iso = fresh.get(t)
+        if not iso:
+            parts.append(f"⚠ resultados {t}: sin datos")
+            continue
+        try:
+            age = (date.fromisoformat(str(s.get("date"))) - date.fromisoformat(iso)).days
+        except ValueError:
+            age = 0
+        mark = "✓" if age <= 1 else "⚠"
+        parts.append(f"{mark} resultados {t} hasta {iso} ({age}d)")
+    L.append("  " + "  ·  ".join(parts))
+    rks = s.get("rankings_status") or {}
+    parts = []
+    for t in ("ATP", "WTA"):
+        r = rks.get(t) or {}
+        if r.get("published"):
+            mark = "⚠" if (r.get("age_days") or 0) > 45 or r.get("warnings") else "✓"
+            parts.append(f"{mark} rankings {t} {r['published']} ({r['n']})")
+        else:
+            parts.append(f"⚠ rankings {t}: ausentes (fallback Elo)")
+    L.append("  " + "  ·  ".join(parts))
+    ss = s.get("surface_sources") or {}
+    n_conf = ss.get("official", 0) + ss.get("tournament_registry", 0)
+    n_inf = ss.get("inferred", 0)
+    L.append(f"  {'✓' if not n_inf else '⚠'} superficie: {n_conf} confirmadas "
+             f"(oficial/registro de torneos)"
+             + (f" · {n_inf} estimadas heurísticamente" if n_inf else ""))
+    cals = [f"{x['name']} {x.get('class', 'OK' if x['ok'] else 'FALLO')}"
             for x in s["sources"] if x.get("authoritative")]
     if cals:
-        L.append("Calendario: " + " · ".join(cals))
+        L.append("  Calendario: " + " · ".join(cals))
     cov = s.get("market_coverage") or {}
     ml = cov.get("match_winner", 0)
     sets_cov = sum(cov.get(k, 0) for k in ("set1_winner", "wins_set",
                                            "straight_sets", "three_sets"))
-    L.append(f"Cuotas: Moneyline {ml}/{s['eligible']}"
+    L.append(f"  Cuotas: Moneyline {ml}/{s['eligible']}"
              + (f" · Sets {sets_cov}/{s['eligible']}" if sets_cov
-                else " · Sets no disponibles"))
+                else " · Sets: not offered (fase posterior)"))
     L.append(f"Partidos confirmados prepartido: {s.get('calendar_confirmed', 0)}"
              + (f" · excluidos con motivo: {sum((s.get('prematch_excluded') or {}).values())}"
                 if s.get("prematch_excluded") else ""))

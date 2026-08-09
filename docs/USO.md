@@ -168,6 +168,35 @@ desaparecida, partido con cuota en un mercado nuevo, cambio de mejor fuente,
 mercado suspendido y cambio de estado OOD tras un sync — sin repetir alertas
 sin cambio material; sincroniza resultados cada ~6 h.
 
+## Credenciales locales (.env)
+
+Copia `.env.example` a `.env` (ignorado por git) y rellena solo lo que uses:
+la clave deja de depender de la sesión de la shell. La variable exportada en
+la shell siempre tiene precedencia; ningún valor se imprime jamás.
+
+## Rankings automáticos
+
+El pipeline de rankings siempre existió (loader as-of + feature de M4/M5),
+pero su fuente era un CSV manual que nadie rellenaba — de ahí el aviso
+permanente `sin_rankings_cargados_fallback_elo`. Ahora el sync genera
+`data/manual/rankings_{atp,wta}.csv` automáticamente a partir de los rankings
+OFICIALES observados por partido en las fuentes de resultados (columnas
+winner_rank/loser_rank de TML y TennisCourtLog): para cada jugador, su último
+ranking observado, con fecha efectiva REAL (la de la observación, no la de
+generación), `source=derived_from_results` y cabecera AUTOGENERADO. Un fichero
+rellenado a mano (oficial) nunca se sobreescribe y tiene preferencia. La
+frescura la vigila el loader (aviso si >45 días). El aviso de fallback a Elo
+solo aparece ya cuando de verdad no hay ranking cargable.
+
+## Superficie por registro de torneos
+
+`surface_source` por partido: `official` (la publica la fuente) >
+`tournament_registry` (torneo inequívoco en `betbot/tournaments.py`: Grand
+Slams, 1000, 500 y 250 habituales, con alias — Toronto/Montreal/Canadian
+Open/National Bank Open → Hard) > `inferred` (heurística estacional). El aviso
+`superficie_estimada` solo acompaña a la heurística; un torneo desconocido no
+inventa superficie.
+
 ## Sincronización automática de resultados
 
 ```bash

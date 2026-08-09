@@ -121,6 +121,11 @@ class GithubResults:
             "best_of": str(r.get("best_of", "3")).strip() or "3",
             "winner": winner, "loser": loser,
             "score": score, "status": status, "_level": "main",
+            # rank del momento del partido: alimenta el ranking derivado
+            "winner_rank": str(r.get("winner_rank", "")).strip(),
+            "loser_rank": str(r.get("loser_rank", "")).strip(),
+            "winner_rank_points": str(r.get("winner_rank_points", "")).strip(),
+            "loser_rank_points": str(r.get("loser_rank_points", "")).strip(),
         }
 
     @staticmethod
@@ -147,4 +152,8 @@ class GithubResults:
             "best_of": str(r.get("best_of", "3")).strip() or "3",
             "winner": winner, "loser": loser,
             "score": score, "status": status, "_level": "main",
+            "winner_rank": str(r.get("winner_rank", "")).strip(),
+            "loser_rank": str(r.get("loser_rank", "")).strip(),
+            "winner_rank_points": str(r.get("winner_rank_points", "")).strip(),
+            "loser_rank_points": str(r.get("loser_rank_points", "")).strip(),
         }

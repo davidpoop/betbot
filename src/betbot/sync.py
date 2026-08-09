@@ -30,13 +30,20 @@ def local_freshness(cfg: dict) -> dict[str, date]:
 
 
 def default_results_sources(cfg: dict) -> list:
+    """Arquitectura: fuente reciente primaria -> fallbacks -> canónico.
+    - sportradar: oficial, la más completa; solo con SPORTRADAR_API_KEY.
+    - wta_official: PRIMERA PARTE, resultados WTA del mismo día (feed global).
+    - github: mirrors históricos (ATP diario cuando TML publica; WTA semanal).
+    """
     from betbot.feeds.results import SportradarResults
     from betbot.feeds.results_github import GithubResults
+    from betbot.feeds.wta_official import WtaOfficialCalendar
     fcfg = cfg.get("feeds", {})
     ttl = int(fcfg.get("ttl_seconds", 900))
     available = {"sportradar": lambda: SportradarResults(ttl_seconds=ttl),
+                 "wta_official": lambda: WtaOfficialCalendar(ttl_seconds=ttl),
                  "github": lambda: GithubResults(ttl_seconds=ttl)}
-    order = fcfg.get("results_order", ["sportradar", "github"])
+    order = fcfg.get("results_order", ["sportradar", "wta_official", "github"])
     return [available[n]() for n in order if n in available]
 
 
@@ -97,13 +104,26 @@ def run_sync(cfg: dict, sources: list | None = None, days: int | None = None,
         near_dup = _near_duplicate_mask(df, canon, since, today)
         n_near = int(near_dup.sum())
         df = df[~near_dup]
+        dup_rows: list[dict] = []
         accepted, rejected, quarantined = prepare_rows(
             df, registry=registry, known_ids=existing_match_ids(canon),
-            source_label="sync", allow_new="unambiguous", today=today)
+            source_label="sync", allow_new="unambiguous", today=today,
+            collect_dups=dup_rows)
         if accepted:
             append_manual(canon, pd.DataFrame(accepted))
             n_new_players = _register_new_players(canon, accepted, registry)
             report["n_new_players"] = n_new_players
+        # duplicados: no re-insertan, pero SÍ enriquecen (ranks nulos) o
+        # corrigen (resultado distinto) filas manuales existentes, con registro
+        if dup_rows:
+            from betbot.canonical.store import enrich_manual
+            enr = enrich_manual(canon, {r["match_id"]: r for r in dup_rows})
+            report["enriched"] = {"ranks_filled": enr["ranks_filled"],
+                                  "results_corrected": enr["results_corrected"],
+                                  "corrections": enr["corrections"][:5]}
+            if enr["results_corrected"] and refresh and not accepted:
+                from betbot.state import refresh_state
+                report["state"] = refresh_state(cfg)
         if quarantined:
             qpath = canon / "import_quarantine.csv"
             qdf = pd.DataFrame(quarantined)
@@ -121,6 +141,13 @@ def run_sync(cfg: dict, sources: list | None = None, days: int | None = None,
     if accepted and refresh:
         from betbot.state import refresh_state
         report["state"] = refresh_state(cfg)
+    # rankings derivados: regenerar SIEMPRE es barato e idempotente; así el
+    # scan (que sincroniza por defecto) deja los rankings al día
+    try:
+        from betbot.rankings_auto import build_derived_rankings
+        report["rankings"] = build_derived_rankings(cfg, today=today)
+    except Exception as exc:  # noqa: BLE001 - nunca rompe el sync
+        report["rankings"] = {"error": str(exc)}
     report["freshness_after"] = {k: str(v) for k, v in local_freshness(cfg).items()}
     with open(canon / "manual_imports_log.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps({"sync": True, **{k: v for k, v in report.items()

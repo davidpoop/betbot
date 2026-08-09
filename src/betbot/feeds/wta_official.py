@@ -212,3 +212,103 @@ class WtaOfficialCalendar:
                           fetched_at=datetime.now(timezone.utc).isoformat())
         st.notes.append("la WTA no publica cuotas: solo calendario y estado")
         return [], st
+
+    # ------------------------------------------------------------------
+    # RESULTADOS del mismo día (ResultsSource): el propio feed global publica
+    # los partidos finalizados con marcador por sets — primera parte, sin
+    # credencial. Es la fuente de resultados WTA más fresca disponible; los
+    # mirrors semanales quedan como histórico/respaldo.
+    # ------------------------------------------------------------------
+    def fetch_results(self, since, until) -> tuple[list[dict], SourceStatus]:
+        st = SourceStatus(name=self.name, ok=False,
+                          fetched_at=datetime.now(timezone.utc).isoformat())
+        try:
+            data = cache.get_json(URL, ttl_seconds=self.ttl, headers=HEADERS)
+        except Exception as exc:  # noqa: BLE001
+            st.error = str(exc)
+            return [], st
+        rows, n_raw, n_skipped = self.parse_results(data, since, until)
+        st.ok = True
+        st.n_items = len(rows)
+        st.notes.append(f"{n_raw} partidos leídos; {len(rows)} finalizados con marcador "
+                        f"en ventana ({n_skipped} descartados)")
+        st.notes.append("cubre solo la ventana que publica el feed global (días "
+                        "cercanos); el histórico semanal sigue viniendo del mirror")
+        return rows, st
+
+    @classmethod
+    def parse_results(cls, data, since, until) -> tuple[list[dict], int, int]:
+        """Partidos MatchState=F con marcador por sets -> filas de la plantilla
+        manual (marcador orientado al GANADOR). Sin marcador completo o sin
+        ganador claro, la fila se descarta: nunca se inventa un resultado."""
+        rows_in = data
+        if isinstance(data, dict):
+            for k in ("Matches", "matches", "data"):
+                if isinstance(data.get(k), list):
+                    rows_in = data[k]
+                    break
+            else:
+                rows_in = []
+        if not isinstance(rows_in, list):
+            rows_in = []
+        out: list[dict] = []
+        n_raw = n_skipped = 0
+        for r in rows_in:
+            if not isinstance(r, dict):
+                continue
+            n_raw += 1
+            if str(r.get("DrawMatchType", "S")).strip().upper() not in ("S", ""):
+                n_skipped += 1
+                continue
+            if str(r.get("MatchState", "")).strip().upper() != "F":
+                n_skipped += 1
+                continue
+            winner_side = str(r.get("Winner", "")).strip().upper()
+            if winner_side not in ("A", "B"):
+                n_skipped += 1
+                continue
+            pA = _player_name(r.get("PlayerNameFirstA"), r.get("PlayerNameLastA"))
+            pB = _player_name(r.get("PlayerNameFirstB"), r.get("PlayerNameLastB"))
+            if not pA or not pB:
+                n_skipped += 1
+                continue
+            ref = _parse_iso(r.get("MatchTimeStamp")) or _parse_iso(r.get("NotBeforeISOTime"))
+            if ref is None or not (since <= ref.date() <= until):
+                n_skipped += 1
+                continue
+            # marcador por sets orientado al ganador (campos verificados del DTO)
+            sets = []
+            for i in range(1, 6):
+                a, b = str(r.get(f"ScoreSet{i}A", "") or "").strip(), \
+                    str(r.get(f"ScoreSet{i}B", "") or "").strip()
+                if not a or not b:
+                    break
+                try:
+                    ga, gb = int(float(a)), int(float(b))
+                except ValueError:
+                    break
+                sets.append((ga, gb) if winner_side == "A" else (gb, ga))
+            if not sets:
+                n_skipped += 1
+                continue                      # F sin marcador: no se inventa
+            texto = " ".join(str(r.get(k, "") or "") for k in
+                             ("ResultString", "ScoreString", "FreeText")).lower()
+            retired = "ret" in texto or "retir" in texto
+            winner, loser = (pA, pB) if winner_side == "A" else (pB, pA)
+            tournament = str(r.get("TournamentName") or r.get("EventTitle")
+                             or "WTA").strip()
+            from betbot.tournaments import resolve_surface
+            surf, _src, _info = resolve_surface("WTA", tournament)
+            out.append({
+                "date": ref.date().isoformat(), "tour": "WTA",
+                "tournament": tournament,
+                "surface": surf or "", "indoor": "false",
+                "round": str(r.get("RoundID", "") or "").strip(),
+                "best_of": "3",
+                "winner": strip_seed(winner), "loser": strip_seed(loser),
+                "score": " ".join(f"{a}-{b}" for a, b in sets),
+                "status": "retired" if retired else "completed",
+                "_level": "main" if str(r.get("DrawLevelType", "M")).strip().upper()
+                          not in ("Q", "I", "ITF") else "other",
+            })
+        return out, n_raw, n_skipped

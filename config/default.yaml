@@ -15,10 +15,11 @@ rankings:
 feeds:
   # SOLO fuentes AUTORITATIVAS (con estado + hora de inicio + id de evento) pueden
   # crear un partido elegible. github_te NO lo es: queda solo como fuente de cuotas.
-  # Orden de calendarios AUTORITATIVOS (primero ESPN; el resto, respaldo).
-  # espn, thesportsdb y wta_official NO necesitan cuenta ni clave privada.
-  # sportradar solo se activa si existe SPORTRADAR_API_KEY (opcional).
-  calendar_order: [espn, thesportsdb, wta_official, sportradar]
+  # Orden de calendarios AUTORITATIVOS. wta_official (primera parte, WTA) y
+  # oddsapi (/events con BETBOT_ODDS_API_KEY: la via ATP operativa) primero;
+  # thesportsdb respaldo best-effort; espn DEGRADADO al final (403 sistematico
+  # observado tambien desde conexiones domesticas); sportradar opcional con key.
+  calendar_order: [wta_official, oddsapi, thesportsdb, espn, sportradar]
   thesportsdb_key: "3"              # clave PÚBLICA de su documentación (sin alta ni secreto)
   # Odds-API.io: SOLO sondeo por ahora (betbot feeds oddsapiio-probe). No es
   # fuente de cuotas del escaner hasta que el sondeo demuestre cobertura real.
@@ -33,7 +34,10 @@ feeds:
   # sus espejos publicos). Sin el, una hora placeholder podria colarse.
   commence_crosscheck: true
   commence_tolerance_minutes: 90    # discrepancia mayor -> conflicto_de_fuentes
-  results_order: [sportradar, github]       # fuentes de resultados para sync-results
+  # Resultados: primaria reciente -> fallbacks. wta_official = primera parte,
+  # mismo dia (solo WTA); github = mirrors historicos (ATP diario via TML,
+  # WTA semanal); sportradar opcional con SPORTRADAR_API_KEY (trial gratuito).
+  results_order: [sportradar, wta_official, github]
   structured_odds_order: [betfair]          # mercados de sets (catalogo dinamico, solo lectura)
   sync_max_days: 30                         # tope de backfill por ciclo de sync
   ttl_seconds: 900                          # caché de red

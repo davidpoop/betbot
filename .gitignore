@@ -8,3 +8,4 @@ artifacts/
 build/
 dist/
 .venv/
+.env

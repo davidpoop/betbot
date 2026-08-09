@@ -294,4 +294,4 @@ def test_oddsapiio_is_not_a_scan_source(cfg):
     from betbot.feeds.manage import default_structured_providers
     assert "betfair" in [p.name for p in default_structured_providers(cfg)]
     assert "github_te" in [o.name for o in odds]
-    assert [c.name for c in cals][0] == "espn"
+    assert [c.name for c in cals][0] == "wta_official"
