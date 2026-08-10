@@ -20,30 +20,85 @@ from betbot.feeds.base import SourceStatus
 from betbot.ingest.manual_results import prepare_rows
 
 
+# Fuentes de resultados de cobertura PARCIAL: cubren solo los torneos con
+# sport key activa, no el circuito completo. Sus filas entran al canónico (y a
+# Elo/actividad) pero JAMÁS avanzan la frescura GLOBAL del tour: un resultado
+# del Canadian Open no convierte en "fresco" al resto del ATP.
+PARTIAL_RESULT_SOURCES = ("sync:oddsapi_scores",)
+
+
 def local_freshness(cfg: dict) -> dict[str, date]:
+    """Frescura GLOBAL honesta por tour: máximo de las filas de cobertura
+    amplia (mirrors + fuentes de circuito completo), excluyendo las parciales."""
     canon = resolve_path(cfg, "canonical_dir")
     try:
         m = load_matches(canon)
     except FileNotFoundError:
         return {}
+    if "source" in m.columns:
+        m = m[~m["source"].isin(PARTIAL_RESULT_SOURCES)]
     return {t: max(g["date"]) for t, g in m.groupby("tour")}
+
+
+def freshness_detail(cfg: dict, today: date | None = None) -> dict:
+    """Frescura desglosada por tour, sin trampas:
+    - global_history: hasta dónde llega la cobertura AMPLIA del circuito;
+    - active_coverage: torneos cubiertos por fuentes parciales (clave canónica
+      del registro de torneos cuando existe) con su última fecha;
+    - coverage_status: FRESH / PARTIAL_FRESH / STALE.
+    PARTIAL_FRESH significa: el dataset global va con retraso, pero los torneos
+    listados sí están al día — nunca se presenta como 'todo fresco'."""
+    from betbot.tournaments import canonical_event
+    canon = resolve_path(cfg, "canonical_dir")
+    today = today or datetime.now(timezone.utc).date()
+    try:
+        m = load_matches(canon)
+    except FileNotFoundError:
+        return {}
+    out: dict = {}
+    for t, g in m.groupby("tour"):
+        part = g[g["source"].isin(PARTIAL_RESULT_SOURCES)] if "source" in g.columns \
+            else g.iloc[0:0]
+        broad = g.drop(part.index)
+        glob = max(broad["date"]) if len(broad) else None
+        cov: dict[str, dict] = {}
+        for name, gg in part.groupby("tournament"):
+            key = canonical_event(str(t), str(name))
+            until = max(gg["date"])
+            if key not in cov or until > cov[key]["until"]:
+                cov[key] = {"tournament": str(name), "until": until}
+        age = (today - glob).days if glob else 999
+        if age <= 2:
+            status = "FRESH"
+        elif any((today - c["until"]).days <= 2 for c in cov.values()):
+            status = "PARTIAL_FRESH"
+        else:
+            status = "STALE"
+        out[str(t)] = {"global_history": glob, "active_coverage": cov,
+                       "coverage_status": status, "global_age_days": age}
+    return out
 
 
 def default_results_sources(cfg: dict) -> list:
     """Arquitectura: fuente reciente primaria -> fallbacks -> canónico.
+    - oddsapi_scores: The Odds API /scores, SOLO ATP y cobertura PARCIAL por
+      torneo; produce filas únicamente si el payload trae marcador por sets
+      (CASO A) — con el agregado documentado devuelve 0 filas (CASO B).
     - sportradar: oficial, la más completa; solo con SPORTRADAR_API_KEY.
     - wta_official: PRIMERA PARTE, resultados WTA del mismo día (feed global).
     - github: mirrors históricos (ATP diario cuando TML publica; WTA semanal).
     """
+    from betbot.feeds.oddsapi_scores import OddsApiScores
     from betbot.feeds.results import SportradarResults
     from betbot.feeds.results_github import GithubResults
     from betbot.feeds.wta_official import WtaOfficialCalendar
     fcfg = cfg.get("feeds", {})
     ttl = int(fcfg.get("ttl_seconds", 900))
-    available = {"sportradar": lambda: SportradarResults(ttl_seconds=ttl),
+    available = {"oddsapi_scores": lambda: OddsApiScores(ttl_seconds=ttl),
+                 "sportradar": lambda: SportradarResults(ttl_seconds=ttl),
                  "wta_official": lambda: WtaOfficialCalendar(ttl_seconds=ttl),
                  "github": lambda: GithubResults(ttl_seconds=ttl)}
-    order = fcfg.get("results_order", ["sportradar", "wta_official", "github"])
+    order = fcfg.get("results_order", ["oddsapi_scores", "sportradar", "wta_official", "github"])
     return [available[n]() for n in order if n in available]
 
 
@@ -149,6 +204,13 @@ def run_sync(cfg: dict, sources: list | None = None, days: int | None = None,
     except Exception as exc:  # noqa: BLE001 - nunca rompe el sync
         report["rankings"] = {"error": str(exc)}
     report["freshness_after"] = {k: str(v) for k, v in local_freshness(cfg).items()}
+    detail = freshness_detail(cfg, today=today)
+    report["freshness_detail"] = {
+        t: {"global_history": str(d["global_history"]),
+            "coverage_status": d["coverage_status"],
+            "active_coverage": {k: {"tournament": c["tournament"], "until": str(c["until"])}
+                                for k, c in d["active_coverage"].items()}}
+        for t, d in detail.items()}
     with open(canon / "manual_imports_log.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps({"sync": True, **{k: v for k, v in report.items()
                                               if k not in ("quarantine_sample", "rejected_sample")}},
@@ -230,14 +292,21 @@ def _near_duplicate_mask(df: pd.DataFrame, canon: Path, since: date,
 
 
 def freshness_header(cfg: dict) -> str:
-    fresh = local_freshness(cfg)
+    detail = freshness_detail(cfg)
     today = datetime.now(timezone.utc).date()
     lines = ["Frescura resultados:"]
     for t in ("ATP", "WTA"):
-        if t in fresh:
-            age = (today - fresh[t]).days
-            warn = "" if age <= 2 else f"  ⚠ {age} días de retraso"
-            lines.append(f"  {t}: actualizado hasta {fresh[t]}{warn}")
-        else:
+        d = detail.get(t)
+        if not d or not d["global_history"]:
             lines.append(f"  {t}: sin datos")
+            continue
+        age = (today - d["global_history"]).days
+        warn = "" if age <= 2 else f"  ⚠ {age} días de retraso"
+        lines.append(f"  {t}: historial global hasta {d['global_history']}{warn}")
+        for c in d["active_coverage"].values():
+            lines.append(f"      cobertura activa parcial: {c['tournament']} "
+                         f"hasta {c['until']} (solo ese torneo)")
+        if d["coverage_status"] == "PARTIAL_FRESH":
+            lines.append(f"      estado: PARTIAL_FRESH — el resto del circuito {t} "
+                         f"sigue con retraso")
     return "\n".join(lines)

@@ -32,16 +32,23 @@ def _read_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, comment="#", skip_blank_lines=True, dtype=str).fillna("")
 
 
-def _activity(state: dict, tour: str, pid: str, d: date, cfg_sel: dict) -> dict:
+def _activity(state: dict, tour: str, pid: str, d: date, cfg_sel: dict,
+              fresh_override: date | None = None) -> dict:
     """Actividad as-of con corrección de frescura: si NUESTROS datos del circuito
     terminan mucho antes del partido (retraso del proveedor), la inactividad se
     mide contra la fecha de frescura F, no contra la fecha del partido — así una
-    jugadora activa hasta F no se convierte en un falso OOD."""
+    jugadora activa hasta F no se convierte en un falso OOD.
+
+    `fresh_override`: frescura demostrada del TORNEO del partido (cobertura
+    activa de una fuente parcial). Solo un partido de un torneo cubierto puede
+    usar esa fecha; el resto del circuito sigue midiendo contra la global."""
     key = f"{tour}|{pid}"
     ld = state["last_date"].get(key)
     last = date.fromisoformat(ld) if ld else None
     f_raw = (state.get("freshness") or {}).get(tour)
     fresh = date.fromisoformat(f_raw) if f_raw else d
+    if fresh_override is not None and fresh_override > fresh:
+        fresh = fresh_override
     lag_days = max(0, (d - fresh).days)
     freshness_unknown = lag_days > int(cfg_sel.get("freshness_lag_max_days", 14))
     ref = min(d, fresh) if freshness_unknown else d      # ventana efectiva de observación
@@ -62,6 +69,23 @@ def _activity(state: dict, tour: str, pid: str, d: date, cfg_sel: dict) -> dict:
         "freshness_unknown": freshness_unknown,
         "freshness_date": fresh, "lag_days": lag_days,
     }
+
+
+def _coverage_fresh(act_state: dict, tour: str, tournament: str) -> date | None:
+    """Frescura demostrada del torneo (cobertura activa de fuentes parciales):
+    solo si el torneo del partido está expresamente cubierto. Sin cobertura ->
+    None y la actividad se mide contra la frescura global del circuito."""
+    cov = (act_state.get("active_coverage") or {}).get(tour) or {}
+    if not cov or not tournament:
+        return None
+    from betbot.tournaments import canonical_event
+    c = cov.get(canonical_event(tour, str(tournament)))
+    if not c:
+        return None
+    try:
+        return date.fromisoformat(str(c["until"]))
+    except ValueError:
+        return None
 
 
 def _build_feature_row(m: DayMatch, a_c: str, b_c: str, elo_state, act_a: dict, act_b: dict,
@@ -248,8 +272,9 @@ def _screen_match(m: DayMatch, quotes: list[OddsQuote], bundle: dict, registry: 
     if not hard_flags:
         a_c, b_c = (ka, kb) if ka < kb else (kb, ka)
         flip = a_c != ka          # el jugador A del usuario es el B canónico
-        act_a = _activity(act_state, tour, a_c, m.date, cfg_sel)
-        act_b = _activity(act_state, tour, b_c, m.date, cfg_sel)
+        cov_fresh = _coverage_fresh(act_state, tour, m.tournament)
+        act_a = _activity(act_state, tour, a_c, m.date, cfg_sel, fresh_override=cov_fresh)
+        act_b = _activity(act_state, tour, b_c, m.date, cfg_sel, fresh_override=cov_fresh)
         if act_a["freshness_unknown"]:
             soft_flags.append(f"data_freshness_unknown({tour} hasta "
                               f"{act_a['freshness_date']}, {act_a['lag_days']}d de retraso)")

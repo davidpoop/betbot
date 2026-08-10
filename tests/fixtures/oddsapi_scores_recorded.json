@@ -1,0 +1,59 @@
+{
+ "note": "Estructura REAL de /v4/sports/{sport}/scores/ de The Odds API, reconstruida de payloads grabados públicamente (eventos completados de tenis del Washington Open 2026-07-30..08-01 con scores '2'/'1' = SETS GANADOS; crawl de abril 2026 con upcoming scores=null; spec OpenAPI oficial). Nombres anonimizados. Verificado: el score de tenis es UN string agregado por participante — jamás marcador por sets.",
+ "sport_key": "tennis_atp_canadian_open",
+ "events": [
+  {
+   "id": "anon_completed_21",
+   "sport_key": "tennis_atp_canadian_open",
+   "sport_title": "ATP Canadian Open",
+   "commence_time": "2026-08-08T01:16:09Z",
+   "completed": true,
+   "home_team": "Jugador A1",
+   "away_team": "Jugador B1",
+   "scores": [
+    {"name": "Jugador A1", "score": "2"},
+    {"name": "Jugador B1", "score": "1"}
+   ],
+   "last_update": "2026-08-08T04:02:11Z"
+  },
+  {
+   "id": "anon_completed_20",
+   "sport_key": "tennis_atp_canadian_open",
+   "sport_title": "ATP Canadian Open",
+   "commence_time": "2026-08-08T15:00:00Z",
+   "completed": true,
+   "home_team": "Jugador A2",
+   "away_team": "Jugador B2",
+   "scores": [
+    {"name": "Jugador A2", "score": "0"},
+    {"name": "Jugador B2", "score": "2"}
+   ],
+   "last_update": "2026-08-08T16:41:03Z"
+  },
+  {
+   "id": "anon_live",
+   "sport_key": "tennis_atp_canadian_open",
+   "sport_title": "ATP Canadian Open",
+   "commence_time": "2026-08-09T19:05:00Z",
+   "completed": false,
+   "home_team": "Jugador A3",
+   "away_team": "Jugador B3",
+   "scores": [
+    {"name": "Jugador A3", "score": "1"},
+    {"name": "Jugador B3", "score": "0"}
+   ],
+   "last_update": "2026-08-09T20:10:44Z"
+  },
+  {
+   "id": "anon_upcoming",
+   "sport_key": "tennis_atp_canadian_open",
+   "sport_title": "ATP Canadian Open",
+   "commence_time": "2026-08-10T17:00:00Z",
+   "completed": false,
+   "home_team": "Jugador A4",
+   "away_team": "Jugador B4",
+   "scores": null,
+   "last_update": null
+  }
+ ]
+}

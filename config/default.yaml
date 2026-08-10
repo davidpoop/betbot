@@ -34,10 +34,13 @@ feeds:
   # sus espejos publicos). Sin el, una hora placeholder podria colarse.
   commence_crosscheck: true
   commence_tolerance_minutes: 90    # discrepancia mayor -> conflicto_de_fuentes
-  # Resultados: primaria reciente -> fallbacks. wta_official = primera parte,
-  # mismo dia (solo WTA); github = mirrors historicos (ATP diario via TML,
-  # WTA semanal); sportradar opcional con SPORTRADAR_API_KEY (trial gratuito).
-  results_order: [sportradar, wta_official, github]
+  # Resultados: primaria reciente -> fallbacks. oddsapi_scores = The Odds API
+  # /scores (solo ATP, cobertura PARCIAL por torneo; produce filas SOLO si el
+  # payload trae marcador por sets — con el agregado documentado devuelve 0 y
+  # nunca avanza la frescura global); wta_official = primera parte, mismo dia
+  # (solo WTA); github = mirrors historicos (ATP diario via TML, WTA semanal);
+  # sportradar opcional con SPORTRADAR_API_KEY (trial gratuito).
+  results_order: [oddsapi_scores, sportradar, wta_official, github]
   structured_odds_order: [betfair]          # mercados de sets (catalogo dinamico, solo lectura)
   sync_max_days: 30                         # tope de backfill por ciclo de sync
   ttl_seconds: 900                          # caché de red

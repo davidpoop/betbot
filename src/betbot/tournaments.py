@@ -135,6 +135,33 @@ def _norm(name: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+# Grupos de alias: el MISMO evento aparece con nombres distintos según la
+# fuente (The Odds API dice "Canadian Open"; la WTA "National Bank Open ...").
+# Para casar cobertura-por-torneo entre fuentes hace falta una identidad de
+# evento compartida. Solo torneos grandes (los que tienen sport key).
+_EVENT_GROUP = {
+    "canadian open": "canadian open", "canada masters": "canadian open",
+    "national bank open": "canadian open", "toronto": "canadian open",
+    "montreal": "canadian open",
+    "cincinnati": "cincinnati", "western & southern": "cincinnati",
+    "indian wells": "indian wells", "bnp paribas open": "indian wells",
+    "rome": "rome", "roma": "rome", "italian open": "rome",
+    "paris masters": "paris masters", "paris bercy": "paris masters",
+    "rolex paris masters": "paris masters",
+    "french open": "roland garros", "roland garros": "roland garros",
+    "china open": "beijing", "beijing": "beijing",
+    "qatar open": "doha", "doha": "doha",
+}
+
+
+def canonical_event(tour: str, tournament: str) -> str:
+    """Identidad de evento estable entre fuentes: clave del registro si se
+    reconoce (pasada por los grupos de alias), o el nombre normalizado."""
+    _surf, _src, info = resolve_surface(tour, tournament)
+    key = info.get("canonical") or _norm(tournament)
+    return _EVENT_GROUP.get(key, key)
+
+
 def resolve_surface(tour: str, tournament: str) -> tuple[str | None, str, dict]:
     """(superficie, surface_source, info). Sin invenciones: torneo no
     reconocido -> (None, "unknown", {}) y la heurística decide con su aviso."""

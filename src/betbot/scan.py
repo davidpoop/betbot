@@ -111,10 +111,16 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
         except Exception as exc:  # noqa: BLE001 - el sync nunca detiene el scan
             sync_report = {"error": str(exc)}
     try:
-        from betbot.sync import local_freshness
+        from betbot.sync import freshness_detail, local_freshness
         results_freshness = {k: str(v) for k, v in local_freshness(cfg).items()}
+        results_coverage = {
+            t: {"coverage_status": d["coverage_status"],
+                "active_coverage": {k: {"tournament": c["tournament"], "until": str(c["until"])}
+                                    for k, c in d["active_coverage"].items()}}
+            for t, d in freshness_detail(cfg).items()}
     except Exception:  # noqa: BLE001
         results_freshness = {}
+        results_coverage = {}
 
     # ---------- 1. calendario: SOLO fuentes autoritativas crean eventos ----------
     now = datetime.now(timezone.utc)
@@ -140,7 +146,8 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
     # FAIL CLOSED: sin ninguna fuente de calendario autoritativa operativa no se
     # analiza nada. Cero señales es preferible a recomendar un partido terminado.
     if n_authoritative_ok == 0:
-        return _fail_closed_result(cfg, hours, statuses, results_freshness, sync_report)
+        return _fail_closed_result(cfg, hours, statuses, results_freshness,
+                                   sync_report, results_coverage)
 
     # ---------- 2. puerta PREPARTIDO (estado + hora + contraste independiente) ----------
     from betbot.prematch import gate
@@ -345,6 +352,7 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
         "surface_sources": surface_sources,
         "rankings_status": _rankings_status(cfg),
         "results_freshness": results_freshness,
+        "results_coverage": results_coverage,
         "sync": sync_report,
         "structured": structured_info,
         # ---- trazabilidad prepartido (fallo Tsitsipas–Fonseca) ----
@@ -431,7 +439,8 @@ def _player_registry(cfg: dict) -> set:
 
 
 def _fail_closed_result(cfg: dict, hours: int, statuses: list[SourceStatus],
-                        results_freshness: dict, sync_report: dict | None) -> ScanResult:
+                        results_freshness: dict, sync_report: dict | None,
+                        results_coverage: dict | None = None) -> ScanResult:
     """Sin calendario autoritativo operativo: cero señales, con motivo explícito."""
     from betbot.prematch import FAIL_CLOSED_MSG
     summary = {
@@ -447,6 +456,7 @@ def _fail_closed_result(cfg: dict, hours: int, statuses: list[SourceStatus],
         "markets_missing_from_sources": list(SUPPORTED_MARKETS),
         "stale_discarded": 0, "states": {},
         "results_freshness": results_freshness, "sync": sync_report,
+        "results_coverage": results_coverage or {},
         "structured": {"active": False, "providers": [], "events": []},
         "sources": [{"name": s.name, "ok": s.ok, "n": s.n_items, "error": s.error,
                      "data_timestamp": s.data_timestamp, "notes": s.notes,

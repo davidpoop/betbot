@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -12,6 +13,15 @@ from betbot.config import REPO_ROOT
 
 CACHE_DIR = REPO_ROOT / "artifacts" / "cache"
 _BACKOFF = [1.0, 2.0, 4.0]
+
+# Los errores citan la URL para diagnóstico, pero algunas fuentes llevan la
+# credencial como query param: se REDACTA SIEMPRE antes de citar. Ningún
+# carácter de una key puede acabar en logs, status ni informes.
+_SECRET_Q = re.compile(r"(?i)\b(api_?key|token|secret|password)=([^&\s]+)")
+
+
+def redact(text: str) -> str:
+    return _SECRET_Q.sub(lambda m: f"{m.group(1)}=***", str(text))
 
 
 def _key(url: str) -> Path:
@@ -43,10 +53,11 @@ def get_json(url: str, ttl_seconds: int = 300, timeout: int = 30,
             # 4xx (salvo 429) es ESTRUCTURAL: reintentar con backoff es inútil
             # (caso real: ESPN 403 sistemático x4 intentos x2 ligas por scan)
             if 400 <= exc.code < 500 and exc.code != 429:
-                raise RuntimeError(f"HTTP {exc.code} (estructural, sin reintentos): {url}")
+                raise RuntimeError(f"HTTP {exc.code} (estructural, sin reintentos): {redact(url)}")
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             last_exc = exc
-    raise RuntimeError(f"fuente inaccesible tras {n_tries} intentos: {url} ({last_exc})")
+    raise RuntimeError(f"fuente inaccesible tras {n_tries} intentos: {redact(url)} "
+                       f"({redact(str(last_exc))})")
 
 
 def get_text(url: str, ttl_seconds: int = 300, timeout: int = 60,
@@ -71,7 +82,8 @@ def get_text(url: str, ttl_seconds: int = 300, timeout: int = 60,
         except urllib.error.HTTPError as exc:
             last_exc = exc
             if 400 <= exc.code < 500 and exc.code != 429:
-                raise RuntimeError(f"HTTP {exc.code} (estructural, sin reintentos): {url}")
+                raise RuntimeError(f"HTTP {exc.code} (estructural, sin reintentos): {redact(url)}")
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_exc = exc
-    raise RuntimeError(f"fuente inaccesible tras {n_tries} intentos: {url} ({last_exc})")
+    raise RuntimeError(f"fuente inaccesible tras {n_tries} intentos: {redact(url)} "
+                       f"({redact(str(last_exc))})")

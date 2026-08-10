@@ -228,11 +228,21 @@ def degraded_banner(summary: dict) -> str | None:
     if not worst:
         return None
     detail = ", ".join(per_tour)
+    # cobertura activa parcial: se INFORMA, pero jamás desactiva el banner —
+    # un torneo cubierto no convierte en fresco al resto del circuito
+    cov_lines = []
+    for t, c in (summary.get("results_coverage") or {}).items():
+        for cc in (c.get("active_coverage") or {}).values():
+            cov_lines.append(f"{cc['tournament']} ({t}) al día hasta {cc['until']}")
+    extra = ""
+    if cov_lines:
+        extra = (" Cobertura activa PARCIAL: " + "; ".join(cov_lines)
+                 + " — el resto del circuito sigue con retraso.")
     return (f"⚠ MODO DEGRADADO — resultados con retraso ({detail}). Afecta a: "
             f"verificación already_completed (solo cubre hasta esa fecha), Elo y "
             f"actividad/OOD (medidos con datos viejos) y fuentes sin evidencia de "
             f"juego (exigen corroboración independiente). No se oculta ninguna señal "
-            f"bloqueada por esto: ver `--verbose`.")
+            f"bloqueada por esto: ver `--verbose`." + extra)
 
 
 def render_daily(res, show_watch: bool = False) -> str:
@@ -264,7 +274,12 @@ def render_daily(res, show_watch: bool = False) -> str:
         except ValueError:
             age = 0
         mark = "✓" if age <= 1 else "⚠"
-        parts.append(f"{mark} resultados {t} hasta {iso} ({age}d)")
+        cov = (s.get("results_coverage") or {}).get(t) or {}
+        tail = ""
+        if cov.get("coverage_status") == "PARTIAL_FRESH":
+            names = [c["tournament"] for c in (cov.get("active_coverage") or {}).values()]
+            tail = f" · PARTIAL_FRESH ({', '.join(names[:2])})"
+        parts.append(f"{mark} resultados {t} hasta {iso} ({age}d){tail}")
     L.append("  " + "  ·  ".join(parts))
     rks = s.get("rankings_status") or {}
     parts = []

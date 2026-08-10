@@ -31,6 +31,17 @@ def refresh_state(cfg: dict) -> dict:
     feats_all, activity_state = build_features(elo_df, players, cfg)
     feats_all = derived_targets(feats_all)
     feats_all["year"] = pd.to_datetime(feats_all["date"]).dt.year
+    # El MARCADOR de frescura debe ser honesto: build_features toma el máximo
+    # de TODAS las filas, pero una fuente de cobertura parcial (p.ej. solo el
+    # Canadian Open) no puede hacer pasar por fresco al circuito entero. El
+    # Elo/actividad SÍ incorporan esas filas (features al día); el marcador
+    # global usa solo cobertura amplia y la parcial va aparte, por torneo.
+    from betbot.sync import freshness_detail, local_freshness
+    activity_state["freshness"] = {t: d.isoformat() for t, d in local_freshness(cfg).items()}
+    activity_state["active_coverage"] = {
+        t: {k: {"tournament": c["tournament"], "until": str(c["until"])}
+            for k, c in d["active_coverage"].items()}
+        for t, d in freshness_detail(cfg).items()}
     bundle["elo_states"] = elo_states
     bundle["activity_state"] = activity_state
     bundle["meta"]["state_refreshed_at"] = datetime.now(timezone.utc).isoformat()

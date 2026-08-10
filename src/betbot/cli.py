@@ -186,6 +186,22 @@ def feeds_wta_raw_cmd(cfg: dict, match_ids: tuple, limit: int) -> None:
     click.echo(feeds_wta_raw(cfg, match_ids=match_ids, limit=limit))
 
 
+@feeds_group.command("oddsapi-scores-probe")
+@click.option("--days-from", type=int, default=3, show_default=True,
+              help="Días hacia atrás de finalizados (1-3; coste 2 créditos)")
+@click.option("--sport", default="", help="sport key concreta (default: primera ATP activa)")
+@click.pass_obj
+def oddsapi_scores_probe_cmd(cfg: dict, days_from: int, sport: str) -> None:
+    """UNA prueba live de /v4/.../scores/ de The Odds API (2 créditos).
+
+    Muestra el payload real de tenis, la granularidad del marcador (¿sets
+    completos o solo agregado?), la contabilidad exacta de créditos y guarda un
+    fixture anonimizado. Requiere BETBOT_ODDS_API_KEY; jamás imprime la clave.
+    """
+    from betbot.feeds.oddsapi_scores_probe import run_probe
+    click.echo(run_probe(cfg, days_from=days_from, sport=sport))
+
+
 @feeds_group.command("oddsapiio-probe")
 @click.option("--hours", type=int, default=48, show_default=True)
 @click.option("--sample", type=int, default=6, show_default=True,

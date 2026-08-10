@@ -177,7 +177,8 @@ def feeds_matrix(cfg: dict, hours: int = 48) -> str:
             f = fresh.get(t)
             age = (today - f).days if f else None
             primary = ("wta_official (mismo día)" if t == "WTA"
-                       else "github/TML (diario si upstream publica)")
+                       else "github/TML (diario si upstream publica) · oddsapi_scores "
+                            "parcial (solo si el payload trae marcador por sets)")
             return (f"hasta {f} ({age}d) · primaria {primary} · "
                     f"fallbacks {', '.join(res_names_for(t))}")
         if cap == "rankings":

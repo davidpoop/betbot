@@ -152,6 +152,11 @@ def prepare_rows(df: pd.DataFrame, *, registry: set, known_ids: set,
         w_pts, l_pts = _num(r.get("winner_rank_points")), _num(r.get("loser_rank_points"))
 
         set1_w = ps.set1_w if ps.set1_completed else None
+        # procedencia por fila: los feeds del sync pueden marcar "_src" con su
+        # nombre; queda "sync:{feed}" para distinguir después las fuentes de
+        # cobertura PARCIAL (frescura) sin tocar la validación
+        srcx = str(r.get("_src", "") or "").strip()
+        row_source = f"{source_label}:{srcx}" if srcx and srcx.lower() != "nan" else source_label
         target = accepted
         if is_dup_dataset:
             rejected.append(_row_error(rownum, f"duplicado (ya existe en el dataset): {match_id}"))
@@ -180,7 +185,7 @@ def prepare_rows(df: pd.DataFrame, *, registry: set, known_ids: set,
             "pts_a": w_pts if a_is_winner else l_pts,
             "pts_b": l_pts if a_is_winner else w_pts,
             "odds_json": "{}",
-            "source": source_label,
+            "source": row_source,
             "match_id": match_id,
         })
     return accepted, rejected, quarantined
