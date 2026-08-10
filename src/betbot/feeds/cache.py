@@ -28,6 +28,13 @@ def _key(url: str) -> Path:
     return CACHE_DIR / (hashlib.sha256(url.encode()).hexdigest()[:24] + ".json")
 
 
+def is_cached(url: str, ttl_seconds: int) -> bool:
+    """True si get_json(url, ttl_seconds) se serviría de caché sin red.
+    Telemetría de presupuesto de peticiones (best-effort, sin bloqueo)."""
+    cpath = _key(url)
+    return cpath.exists() and (time.time() - cpath.stat().st_mtime) < ttl_seconds
+
+
 def get_json(url: str, ttl_seconds: int = 300, timeout: int = 30,
              headers: dict | None = None) -> dict | list:
     """GET JSON con caché TTL y reintentos (1s/2s/4s). Lanza la última excepción

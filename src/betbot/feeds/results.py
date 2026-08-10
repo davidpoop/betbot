@@ -75,14 +75,71 @@ class SportradarResults:
     """API oficial de Sportradar Tennis v3 (summaries por día).
 
     Requiere SPORTRADAR_API_KEY (plan trial o de pago). Solo lectura.
+
+    CONSCIENTE DE CUOTA (el trial es limitado):
+    - Autenticación por header `x-api-key`: la clave JAMÁS va en la URL, así
+      tampoco entra en el hash del fichero de caché ni en ningún error que
+      cite la URL (y cache.redact sigue de segundo cinturón).
+    - Fetch INCREMENTAL: con frescura local D solo se consultan los días
+      posteriores a D más una ventana de replay corta (`replay_days`, def. 2:
+      D-1 y D) para capturar correcciones oficiales tardías. Jamás se
+      recorre entero el lookback del sync una vez al día ya alcanzado.
+    - TTL por antigüedad del día: hoy = ttl corto (900 s, el feed cambia);
+      ayer = 6 h (correcciones frecuentes el primer día); días anteriores =
+      7 días (un día cerrado solo cambia por corrección oficial rara — la
+      ventana de replay ya cubre las normales, y la expiración semanal
+      permite igualmente las excepcionales).
+    - PRESUPUESTO por sync (`max_requests`, config
+      feeds.sportradar_max_requests_per_sync): si el plan de días exige más
+      peticiones de red, NO se gasta nada en silencio — se informa de
+      cuántas harían falta y se exige el backfill explícito
+      (`betbot sync-results --backfill-atp`).
+    - HUECOS: si un día falla, los días POSTERIORES no se consultan ni se
+      devuelven: la frescura global no puede saltar por encima de un hueco.
+      El siguiente sync reintenta desde el día fallido (los días ya bajados
+      quedan en caché y no vuelven a gastar red).
     """
     name = "sportradar"
     supported_tours = frozenset({"ATP", "WTA"})
     BASE = "https://api.sportradar.com/tennis/trial/v3/en"
+    TTL_YESTERDAY = 6 * 3600
+    TTL_PAST = 7 * 24 * 3600
 
-    def __init__(self, api_key: str | None = None, ttl_seconds: int = 900) -> None:
+    def __init__(self, api_key: str | None = None, ttl_seconds: int = 900,
+                 fresh_until: dict | None = None, replay_days: int = 2,
+                 max_requests: int = 8, allow_backfill: bool = False) -> None:
         self.key = api_key or os.environ.get("SPORTRADAR_API_KEY", "")
         self.ttl = ttl_seconds
+        self.fresh_until = dict(fresh_until or {})
+        self.replay_days = max(1, int(replay_days))
+        self.max_requests = max(1, int(max_requests))
+        self.allow_backfill = allow_backfill
+
+    def _headers(self) -> dict:
+        return {"x-api-key": self.key, "Accept": "application/json"}
+
+    def _day_url(self, d: date) -> str:
+        return f"{self.BASE}/schedules/{d.isoformat()}/summaries.json"
+
+    def _ttl_for(self, d: date, today: date) -> int:
+        if d >= today:
+            return self.ttl
+        if d == today - timedelta(days=1):
+            return self.TTL_YESTERDAY
+        return self.TTL_PAST
+
+    def _plan_days(self, since: date, until: date) -> list[date]:
+        """Días a consultar: (frescura local mínima de los tours cubiertos −
+        replay) .. until, sin bajar del `since` del sync."""
+        start = since
+        fresh = [self.fresh_until[t] for t in self.supported_tours
+                 if self.fresh_until.get(t)]
+        if fresh:
+            d0 = min(fresh) - timedelta(days=self.replay_days - 1)
+            start = max(since, d0)
+        if start > until:
+            return []
+        return [start + timedelta(days=i) for i in range((until - start).days + 1)]
 
     def fetch_results(self, since: date, until: date) -> tuple[list[dict], SourceStatus]:
         st = SourceStatus(name=self.name, ok=False,
@@ -90,25 +147,64 @@ class SportradarResults:
         if not self.key:
             st.error = "sin SPORTRADAR_API_KEY (adaptador inactivo)"
             return [], st
+        today = datetime.now(timezone.utc).date()
+        days = self._plan_days(since, until)
+        if not days:
+            st.ok = True
+            st.notes.append("sin días nuevos que consultar (frescura al día)")
+            return [], st
+        need_net = [d for d in days
+                    if not cache.is_cached(self._day_url(d), self._ttl_for(d, today))]
+        if len(need_net) > self.max_requests and not self.allow_backfill:
+            st.error = (f"presupuesto insuficiente: harían falta {len(need_net)} "
+                        f"peticiones de red para {days[0]}..{days[-1]} (límite "
+                        f"feeds.sportradar_max_requests_per_sync={self.max_requests}). "
+                        f"Autoriza el gasto UNA vez con: betbot sync-results --backfill-atp")
+            st.notes.append("no se ha gastado ninguna petición")
+            return [], st
+
         rows: list[dict] = []
-        d = since
-        errors: list[str] = []
-        while d <= until:
-            url = f"{self.BASE}/schedules/{d.isoformat()}/summaries.json?api_key={self.key}"
+        n_net = n_cache = 0
+        failed: date | None = None
+        fetched: list[date] = []
+        comp_by_tour: dict[str, set] = {"ATP": set(), "WTA": set()}
+        n_fin = {"ATP": 0, "WTA": 0}
+        for d in days:
+            url = self._day_url(d)
+            was_cached = cache.is_cached(url, self._ttl_for(d, today))
             try:
-                data = cache.get_json(url, ttl_seconds=self.ttl)
+                data = cache.get_json(url, ttl_seconds=self._ttl_for(d, today),
+                                      headers=self._headers())
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"{d}: {exc}")
-                d += timedelta(days=1)
-                continue
+                failed = d
+                st.error = cache.redact(f"{d}: {exc}")
+                break                 # los días posteriores NO se consultan: sin huecos
+            n_cache += 1 if was_cached else 0
+            n_net += 0 if was_cached else 1
+            fetched.append(d)
             for summ in data.get("summaries", []):
                 row = self._parse_summary(summ, d)
                 if row:
                     rows.append(row)
-            d += timedelta(days=1)
-        st.ok = not errors or bool(rows)
+                    t = row["tour"]
+                    comp_by_tour.setdefault(t, set()).add(row["tournament"])
+                    n_fin[t] = n_fin.get(t, 0) + 1
+        st.ok = failed is None or bool(fetched)
         st.n_items = len(rows)
-        st.error = "; ".join(errors[:3])
+        rng = f"{days[0]}..{days[-1]}"
+        st.notes.append(f"telemetría: dates_requested={len(days)} · "
+                        f"from_cache={n_cache} · network_requests={n_net} · rango={rng}")
+        for t in ("ATP", "WTA"):
+            if n_fin.get(t):
+                comps = sorted(comp_by_tour.get(t, set()))
+                st.notes.append(f"{t}: {n_fin[t]} finalizados en {len(comps)} "
+                                f"competiciones ({', '.join(comps[:4])}"
+                                + ("…" if len(comps) > 4 else "") + ")")
+        if failed is not None:
+            withheld = [d for d in days if d > failed]
+            st.notes.append(f"día {failed} FALLÓ: {len(withheld)} días posteriores "
+                            f"retenidos para no declarar frescura con hueco; el "
+                            f"próximo sync reintentará desde {failed}")
         return rows, st
 
     # ------------------------------------------------------------------
@@ -130,11 +226,11 @@ class SportradarResults:
         lo, hi = now - timedelta(days=1), now + timedelta(hours=window_hours)
         d, last = now.date(), (now + timedelta(hours=window_hours)).date()
         while d <= last:
-            url = f"{self.BASE}/schedules/{d.isoformat()}/summaries.json?api_key={self.key}"
+            url = self._day_url(d)                    # key SOLO en header x-api-key
             try:
-                data = cache.get_json(url, ttl_seconds=self.ttl)
+                data = cache.get_json(url, ttl_seconds=self.ttl, headers=self._headers())
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"{d}: {exc}")
+                errors.append(cache.redact(f"{d}: {exc}"))
                 d += timedelta(days=1)
                 continue
             for summ in data.get("summaries", []):

@@ -126,12 +126,18 @@ def screen(cfg: dict, matches_path: str, odds_path: str | None, out_path: str | 
 @click.option("--days", type=int, default=None,
               help="Tope de backfill en días (defecto: feeds.sync_max_days)")
 @click.option("--no-refresh", is_flag=True, help="No recalcular Elo/estado tras incorporar")
+@click.option("--backfill-atp", is_flag=True,
+              help="Backfill explícito ATP: detecta el primer día que falta, consulta "
+                   "hasta hoy y AUTORIZA a sportradar a superar su presupuesto por sync "
+                   "una única vez (el pipeline de validación es el normal)")
 @click.pass_obj
-def sync_results_cmd(cfg: dict, days: int | None, no_refresh: bool) -> None:
+def sync_results_cmd(cfg: dict, days: int | None, no_refresh: bool,
+                     backfill_atp: bool) -> None:
     """Sincroniza resultados recientes ATP/WTA desde fuentes estructuradas
     (append-only; una segunda ejecución no duplica ni altera el Elo)."""
     from betbot.sync import freshness_header, run_sync
-    report = run_sync(cfg, days=days, refresh=not no_refresh)
+    report = run_sync(cfg, days=days, refresh=not no_refresh,
+                      backfill_tour="ATP" if backfill_atp else None)
     click.echo(json.dumps(report, indent=2, ensure_ascii=False, default=str))
     click.echo(freshness_header(cfg))
 

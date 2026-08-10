@@ -40,7 +40,13 @@ feeds:
   # nunca avanza la frescura global); wta_official = primera parte, mismo dia
   # (solo WTA); github = mirrors historicos (ATP diario via TML, WTA semanal);
   # sportradar opcional con SPORTRADAR_API_KEY (trial gratuito).
-  results_order: [oddsapi_scores, sportradar, wta_official, github]
+  # wta_official ANTES que sportradar a propósito: WTA lo mantiene de primaria
+  # y sportradar queda de respaldo (ATP sí usa sportradar de primaria reciente).
+  results_order: [oddsapi_scores, wta_official, sportradar, github]
+  # Sportradar consciente de cuota (el trial es limitado):
+  sportradar_replay_days: 2              # re-consulta D-1..D por correcciones tardías
+  sportradar_max_requests_per_sync: 8    # tope de peticiones de red por sync;
+                                         # superarlo exige `sync-results --backfill-atp`
   structured_odds_order: [betfair]          # mercados de sets (catalogo dinamico, solo lectura)
   sync_max_days: 30                         # tope de backfill por ciclo de sync
   ttl_seconds: 900                          # caché de red

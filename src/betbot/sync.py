@@ -79,13 +79,17 @@ def freshness_detail(cfg: dict, today: date | None = None) -> dict:
     return out
 
 
-def default_results_sources(cfg: dict) -> list:
+def default_results_sources(cfg: dict, allow_backfill: bool = False) -> list:
     """Arquitectura: fuente reciente primaria -> fallbacks -> canónico.
     - oddsapi_scores: The Odds API /scores, SOLO ATP y cobertura PARCIAL por
       torneo; produce filas únicamente si el payload trae marcador por sets
       (CASO A) — con el agregado documentado devuelve 0 filas (CASO B).
-    - sportradar: oficial, la más completa; solo con SPORTRADAR_API_KEY.
-    - wta_official: PRIMERA PARTE, resultados WTA del mismo día (feed global).
+    - wta_official: PRIMERA PARTE, resultados WTA del mismo día (va ANTES de
+      sportradar a propósito: WTA mantiene wta_official como primaria y
+      sportradar queda de respaldo opcional).
+    - sportradar: oficial (ATP reciente primaria cuando hay key), incremental
+      y consciente de cuota: solo consulta días nuevos + ventana de replay,
+      con presupuesto por sync y backfill explícito.
     - github: mirrors históricos (ATP diario cuando TML publica; WTA semanal).
     """
     from betbot.feeds.oddsapi_scores import OddsApiScores
@@ -94,23 +98,38 @@ def default_results_sources(cfg: dict) -> list:
     from betbot.feeds.wta_official import WtaOfficialCalendar
     fcfg = cfg.get("feeds", {})
     ttl = int(fcfg.get("ttl_seconds", 900))
-    available = {"oddsapi_scores": lambda: OddsApiScores(ttl_seconds=ttl),
-                 "sportradar": lambda: SportradarResults(ttl_seconds=ttl),
-                 "wta_official": lambda: WtaOfficialCalendar(ttl_seconds=ttl),
-                 "github": lambda: GithubResults(ttl_seconds=ttl)}
-    order = fcfg.get("results_order", ["oddsapi_scores", "sportradar", "wta_official", "github"])
+    available = {
+        "oddsapi_scores": lambda: OddsApiScores(ttl_seconds=ttl),
+        "sportradar": lambda: SportradarResults(
+            ttl_seconds=ttl, fresh_until=local_freshness(cfg),
+            replay_days=int(fcfg.get("sportradar_replay_days", 2)),
+            max_requests=int(fcfg.get("sportradar_max_requests_per_sync", 8)),
+            allow_backfill=allow_backfill),
+        "wta_official": lambda: WtaOfficialCalendar(ttl_seconds=ttl),
+        "github": lambda: GithubResults(ttl_seconds=ttl)}
+    order = fcfg.get("results_order", ["oddsapi_scores", "wta_official", "sportradar", "github"])
     return [available[n]() for n in order if n in available]
 
 
 def run_sync(cfg: dict, sources: list | None = None, days: int | None = None,
-             refresh: bool = True, today: date | None = None) -> dict:
+             refresh: bool = True, today: date | None = None,
+             backfill_tour: str | None = None) -> dict:
     canon = resolve_path(cfg, "canonical_dir")
     today = today or datetime.now(timezone.utc).date()
-    if sources is None:
-        sources = default_results_sources(cfg)
     fresh_before = local_freshness(cfg)
+    if sources is None:
+        # backfill explícito: autoriza a las fuentes con presupuesto (sportradar)
+        # a gastar las peticiones necesarias UNA vez; el sync normal no lo hace
+        sources = default_results_sources(cfg, allow_backfill=backfill_tour is not None)
     max_days = days or int(cfg.get("feeds", {}).get("sync_max_days", 30))
-    if days is not None:
+    if backfill_tour:
+        # primer día que falta del tour indicado -> hoy (pipeline normal íntegro:
+        # prepare_rows, dedupe, cuarentena, rankings y estado como siempre)
+        t = backfill_tour.upper()
+        base = fresh_before.get(t)
+        since = (base + timedelta(days=1)) if base else today - timedelta(days=max_days)
+        since = max(since, today - timedelta(days=max_days))
+    elif days is not None:
         # --days explícito: backfill forzado de N días (rellena huecos aunque
         # la fecha máxima local esté inflada por importaciones puntuales)
         since = today - timedelta(days=days)
@@ -131,6 +150,10 @@ def run_sync(cfg: dict, sources: list | None = None, days: int | None = None,
     report: dict = {
         "synced_at": datetime.now(timezone.utc).isoformat(),
         "window": {"since": str(since), "until": str(today), "max_days": max_days},
+        **({"backfill": {"tour": backfill_tour.upper(),
+                         "first_missing_date": str(since),
+                         "nota": "gasto de red autorizado explícitamente para esta ejecución"}}
+           if backfill_tour else {}),
         "sources": [{"name": s.name, "ok": s.ok, "n": s.n_items, "error": s.error,
                      "notes": s.notes} for s in statuses],
         "n_fetched_main": len(raw_rows),
