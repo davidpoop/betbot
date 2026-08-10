@@ -43,10 +43,15 @@ feeds:
   # wta_official ANTES que sportradar a propósito: WTA lo mantiene de primaria
   # y sportradar queda de respaldo (ATP sí usa sportradar de primaria reciente).
   results_order: [oddsapi_scores, wta_official, sportradar, github]
-  # Sportradar consciente de cuota (el trial es limitado):
+  # Sportradar consciente de cuota (el trial es limitado). OPCIONAL: sin
+  # suscripción queda INACTIVO_CONFIG y JAMÁS es requisito del producto.
   sportradar_replay_days: 2              # re-consulta D-1..D por correcciones tardías
   sportradar_max_requests_per_sync: 8    # tope de peticiones de red por sync;
                                          # superarlo exige `sync-results --backfill-atp`
+  # The Odds API /scores para RECENT OUTCOMES (ganador+sets, outcome_only):
+  # /sports es gratis (caché 24h); cada /scores con daysFrom = 2 créditos.
+  # Con el tope: <= 2*max_sports créditos por sync sin caché (~8/día).
+  oddsapi_scores_max_sports: 4
   structured_odds_order: [betfair]          # mercados de sets (catalogo dinamico, solo lectura)
   sync_max_days: 30                         # tope de backfill por ciclo de sync
   ttl_seconds: 900                          # caché de red

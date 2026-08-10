@@ -67,11 +67,14 @@ def completed_index(cfg: dict, around: date | None = None,
     """{(tour, jugador_a, jugador_b): [{date, status}]} desde el almacén local
     de resultados, en una ventana alrededor de hoy. Claves canónicas exactas
     (nada de coincidencia difusa)."""
-    from betbot.canonical.store import load_matches
+    # incluye los RECENT OUTCOMES no reconciliados: un outcome (ganador+sets)
+    # es evidencia plena de que el partido ya se jugó — refuerza la
+    # verificación already_completed sin esperar al marcador completo
+    from betbot.canonical.outcomes import load_state_matches
     from betbot.config import resolve_path
     around = around or datetime.now(timezone.utc).date()
     try:
-        m = load_matches(resolve_path(cfg, "canonical_dir"))
+        m = load_state_matches(resolve_path(cfg, "canonical_dir"))
     except FileNotFoundError:
         return {}
     lo, hi = around - timedelta(days=days_back), around + timedelta(days=days_fwd)

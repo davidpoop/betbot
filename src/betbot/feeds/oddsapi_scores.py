@@ -117,7 +117,9 @@ class OddsApiScores:
         self.max_sports = max_sports
 
     def _tennis_atp_keys(self) -> list[tuple[str, str]]:
-        sports = cache.get_json(f"{BASE}/sports/?apiKey={self.key}", ttl_seconds=3600)
+        # /sports no cuesta créditos, pero tampoco se gasta red sin motivo:
+        # la lista de torneos activos cambia como mucho a diario -> caché 24 h
+        sports = cache.get_json(f"{BASE}/sports/?apiKey={self.key}", ttl_seconds=86400)
         return [(s["key"], str(s.get("title", ""))) for s in sports
                 if str(s.get("key", "")).startswith("tennis_atp") and s.get("active")]
 
@@ -214,12 +216,122 @@ class OddsApiScores:
             "_level": "main", "_src": self.name,
         }, ""
 
-    def completed_events(self, since: date, until: date) -> list[dict]:
-        """Evidencia live/completed para diagnóstico (id, fecha, jugadores) —
-        independiente de la granularidad del marcador. NO alimenta canonical
-        y hoy tampoco la puerta prematch: para eventos del calendario oddsapi
-        sería corroboración de la MISMA familia de proveedor (prohibida por
-        anti-circularidad), y `ya_comenzado` ya se cubre con commence_time."""
-        rows, _ = self.fetch_results(since, until)
-        out = [{"date": r["date"], "winner": r["winner"], "loser": r["loser"]} for r in rows]
-        return out
+    # ------------------------------------------------------------------
+    # RECENT OUTCOMES: el agregado real de /scores (sets ganados "2"/"1")
+    # como segundo nivel de dato explícitamente limitado (outcome_only).
+    # Reglas seguras (verificadas contra payloads reales y su flag
+    # `completed` poco fiable):
+    #   Bo3: 2-0 / 2-1 = terminal inequívoco (con o sin completed=true).
+    #   Bo5 (Grand Slam por registro de torneos): terminal = 3 sets.
+    #   completed=true + marcador desigual NO terminal (p.ej. 1-0): ganador
+    #     inequívoco = el líder; retirement queda "unknown" (jamás inventada).
+    #   Empate (1-1) => reject. Live no terminal => reject. Upcoming => nunca.
+    #   Marcador absurdo (> sets necesarios, negativos) => fail closed.
+    # ------------------------------------------------------------------
+    def fetch_outcomes(self, since: date, until: date) -> tuple[list[dict], SourceStatus]:
+        st = SourceStatus(name=f"{self.name}:outcomes", ok=False,
+                          fetched_at=datetime.now(timezone.utc).isoformat())
+        if not self.key:
+            st.error = "sin BETBOT_ODDS_API_KEY (adaptador inactivo)"
+            return [], st
+        today = datetime.now(timezone.utc).date()
+        days_back = max(1, min(3, (today - since).days or 1))
+        try:
+            keys = self._tennis_atp_keys()
+        except Exception as exc:  # noqa: BLE001
+            st.error = cache.redact(str(exc))
+            return [], st
+        if len(keys) > self.max_sports:
+            st.notes.append(f"{len(keys)} sport keys ATP activas; se consultan "
+                            f"{self.max_sports} (tope de créditos)")
+            keys = keys[: self.max_sports]
+        out: list[dict] = []
+        n_net = n_cache = 0
+        counts = {"terminal": 0, "winner_sin_terminal": 0, "empate": 0,
+                  "live_no_terminal": 0, "upcoming": 0, "ambiguo": 0,
+                  "fuera_ventana": 0}
+        errors: list[str] = []
+        for skey, title in keys:
+            url = f"{BASE}/sports/{skey}/scores/?daysFrom={days_back}&apiKey={self.key}"
+            cached = cache.is_cached(url, self.ttl)
+            try:
+                events = cache.get_json(url, ttl_seconds=self.ttl)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{skey}: {cache.redact(str(exc))}")
+                continue
+            n_cache += 1 if cached else 0
+            n_net += 0 if cached else 1
+            for ev in events if isinstance(events, list) else []:
+                rec, verdict = self._outcome_from_event(ev, skey, title, since, until)
+                counts[verdict] = counts.get(verdict, 0) + 1
+                if rec is not None:
+                    out.append(rec)
+        st.ok = not errors or bool(out) or n_net + n_cache > 0
+        st.error = "; ".join(errors[:3])
+        st.n_items = len(out)
+        st.notes.append(f"telemetría: sports={len(keys)} · from_cache={n_cache} · "
+                        f"network_requests={n_net} · ~{2 * n_net} créditos · "
+                        f"daysFrom={days_back}")
+        st.notes.append("veredictos: " + ", ".join(f"{k}={v}" for k, v in counts.items() if v))
+        st.notes.append("outcome_only: sin juegos, sin stats, sin ranking, retirada "
+                        "desconocida — jamás entra en matches.parquet")
+        return out, st
+
+    def _outcome_from_event(self, ev: dict, sport_key: str, sport_title: str,
+                            since: date, until: date) -> tuple[dict | None, str]:
+        scores = ev.get("scores")
+        if not isinstance(scores, list) or len(scores) != 2:
+            return None, "upcoming"
+        try:
+            d = datetime.fromisoformat(str(ev.get("commence_time", ""))
+                                       .replace("Z", "+00:00")).astimezone(timezone.utc).date()
+        except ValueError:
+            return None, "ambiguo"
+        if not (since <= d <= until):
+            return None, "fuera_ventana"
+        home = str(ev.get("home_team", "") or "").strip()
+        away = str(ev.get("away_team", "") or "").strip()
+        names = [str(s.get("name", "") or "").strip() for s in scores]
+        if not home or not away or set(names) != {home, away}:
+            return None, "ambiguo"
+        try:
+            by_name = {str(s.get("name", "")).strip(): int(str(s.get("score", "")).strip())
+                       for s in scores}
+            sh, sa = by_name[home], by_name[away]
+        except (ValueError, KeyError):
+            return None, "ambiguo"            # score no entero: aquí solo se aceptan sets
+        if sh < 0 or sa < 0:
+            return None, "ambiguo"
+        tournament = _tournament_from_sport(sport_key, sport_title)
+        from betbot.tournaments import resolve_surface
+        surf, _src, info = resolve_surface("ATP", tournament)
+        need = 3 if info.get("level") == "grand_slam" else 2
+        completed = bool(ev.get("completed"))
+        hi, lo = max(sh, sa), min(sh, sa)
+        if hi > need or lo >= need:
+            return None, "ambiguo"            # marcador imposible: fail closed
+        terminal = hi == need and lo < need
+        if not terminal:
+            if sh == sa:
+                return None, "empate"
+            if not completed:
+                return None, "live_no_terminal"
+            # completed=true sin marcador terminal: retirada/abandono probable.
+            # El ganador es el líder inequívoco; la retirada queda UNKNOWN.
+            confidence = "completed_sin_terminal"
+        else:
+            confidence = "terminal_y_completed" if completed else "terminal_score"
+        home_won = sh > sa
+        return {
+            "event_id": str(ev.get("id", "")), "date": d.isoformat(), "tour": "ATP",
+            "tournament": tournament, "surface": surf or "",
+            "winner_name": home if home_won else away,
+            "loser_name": away if home_won else home,
+            "sets_w": hi, "sets_l": lo,
+            # la retirada es SIEMPRE desconocida en este feed: ni siquiera un
+            # 2-0 terminal la excluye (retirada con 0-2 en contra). Jamás se
+            # afirma ni se niega: "unknown" y el estado no marca last_retired.
+            "retirement": "unknown",
+            "completion_confidence": confidence,
+            "source": "oddsapi_scores",
+        }, ("terminal" if terminal else "winner_sin_terminal")

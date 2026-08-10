@@ -209,40 +209,51 @@ def _pick_block(i: int, o: Opportunity) -> list[str]:
 
 
 def degraded_banner(summary: dict) -> str | None:
-    """MODO DEGRADADO visible cuando los resultados van con retraso."""
+    """Aviso de frescura POR CAPACIDAD (semántica del mandato de dos niveles):
+
+    - production_feature_freshness == STALE en algún tour -> MODO DEGRADADO
+      severo (las features que usa la probabilidad están viejas).
+    - PARTIAL -> aviso ligero y honesto: el estado predictivo (Elo/actividad/
+      experiencia) está al día en los torneos cubiertos por outcomes, pero el
+      detalle de marcadores completos va con retraso (retired_recent y
+      rankings parciales) y el resto del circuito sigue midiendo contra la
+      frescura global. Ni banner severo ni verde artificial.
+    - FRESH en todos -> sin banner."""
+    ref = str(summary.get("date"))
     fresh = summary.get("results_freshness") or {}
-    worst, per_tour = 0, []
+    cov = summary.get("results_coverage") or {}
+    severe, partial = [], []
     for t in ("ATP", "WTA"):
         iso = fresh.get(t)
         if not iso:
-            per_tour.append(f"{t} sin datos")
-            worst = max(worst, 99)
+            severe.append(f"{t} sin datos")
             continue
         try:
-            age = (date.fromisoformat(str(summary.get("date"))) - date.fromisoformat(iso)).days
+            age = (date.fromisoformat(ref) - date.fromisoformat(iso)).days
         except ValueError:
             age = 0
-        if age > 2:
-            per_tour.append(f"{t} {age}d")
-            worst = max(worst, age)
-    if not worst:
-        return None
-    detail = ", ".join(per_tour)
-    # cobertura activa parcial: se INFORMA, pero jamás desactiva el banner —
-    # un torneo cubierto no convierte en fresco al resto del circuito
-    cov_lines = []
-    for t, c in (summary.get("results_coverage") or {}).items():
-        for cc in (c.get("active_coverage") or {}).values():
-            cov_lines.append(f"{cc['tournament']} ({t}) al día hasta {cc['until']}")
-    extra = ""
-    if cov_lines:
-        extra = (" Cobertura activa PARCIAL: " + "; ".join(cov_lines)
-                 + " — el resto del circuito sigue con retraso.")
-    return (f"⚠ MODO DEGRADADO — resultados con retraso ({detail}). Afecta a: "
-            f"verificación already_completed (solo cubre hasta esa fecha), Elo y "
-            f"actividad/OOD (medidos con datos viejos) y fuentes sin evidencia de "
-            f"juego (exigen corroboración independiente). No se oculta ninguna señal "
-            f"bloqueada por esto: ver `--verbose`." + extra)
+        if age <= 2:
+            continue
+        c = cov.get(t) or {}
+        if c.get("production_feature_freshness") == "PARTIAL":
+            names = [cc["tournament"] for cc in (c.get("active_coverage") or {}).values()]
+            partial.append(f"{t}: estado predictivo AL DÍA (outcomes hasta "
+                           f"{c.get('outcome_state', '?')} en {', '.join(names[:3])}); "
+                           f"marcadores completos con {age}d de retraso")
+        else:
+            severe.append(f"{t} {age}d")
+    if severe:
+        return (f"⚠ MODO DEGRADADO — resultados con retraso ({', '.join(severe)}). "
+                f"Afecta a: verificación already_completed (solo cubre hasta esa "
+                f"fecha), Elo y actividad/OOD (medidos con datos viejos) y fuentes "
+                f"sin evidencia de juego (exigen corroboración independiente). No se "
+                f"oculta ninguna señal bloqueada por esto: ver `--verbose`."
+                + ((" " + " · ".join(partial)) if partial else ""))
+    if partial:
+        return ("⚠ FRESCURA PARCIAL — " + " · ".join(partial) + ". retired_recent "
+                "queda sin evidencia en esos partidos (jamás se inventa) y el resto "
+                "del circuito sigue contra la frescura global.")
+    return None
 
 
 def render_daily(res, show_watch: bool = False) -> str:

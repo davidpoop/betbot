@@ -41,13 +41,25 @@ def local_freshness(cfg: dict) -> dict[str, date]:
 
 
 def freshness_detail(cfg: dict, today: date | None = None) -> dict:
-    """Frescura desglosada por tour, sin trampas:
-    - global_history: hasta dónde llega la cobertura AMPLIA del circuito;
-    - active_coverage: torneos cubiertos por fuentes parciales (clave canónica
-      del registro de torneos cuando existe) con su última fecha;
-    - coverage_status: FRESH / PARTIAL_FRESH / STALE.
-    PARTIAL_FRESH significa: el dataset global va con retraso, pero los torneos
-    listados sí están al día — nunca se presenta como 'todo fresco'."""
+    """Frescura POR CAPACIDAD y por tour — nunca una sola fecha tonta:
+    - global_history: hasta dónde llega la cobertura AMPLIA con marcador
+      completo (capacidad full_scores);
+    - outcome_state: hasta dónde llega el ESTADO predictivo contando también
+      los recent outcomes (ganador+sets sin juegos);
+    - active_coverage: torneos con cobertura demostrada por fuentes parciales
+      (filas parciales full + outcomes), con su última fecha;
+    - coverage_status: FRESH / PARTIAL_FRESH / STALE (dato completo);
+    - production_feature_freshness: estado de las features que el CHAMPION
+      consume de resultados recientes (elo, elo_surf, rest, m14, m12m, layoff,
+      experience — todas actualizables con outcome-only):
+        FRESH   = marcadores completos al día (todo fresco);
+        PARTIAL = full con retraso, pero el estado predictivo está al día en
+                  los torneos cubiertos por outcomes (retired_recent/rankings
+                  parciales — el detalle sigue stale);
+        STALE   = ni siquiera outcomes recientes.
+    PARTIAL jamás se presenta como 'todo fresco': la cobertura es por torneo y
+    el screener solo la aplica a partidos de torneos cubiertos."""
+    from betbot.canonical.outcomes import outcome_coverage, outcome_freshness
     from betbot.tournaments import canonical_event
     canon = resolve_path(cfg, "canonical_dir")
     today = today or datetime.now(timezone.utc).date()
@@ -55,27 +67,41 @@ def freshness_detail(cfg: dict, today: date | None = None) -> dict:
         m = load_matches(canon)
     except FileNotFoundError:
         return {}
+    o_fresh = outcome_freshness(canon)
+    o_cov = outcome_coverage(canon)
     out: dict = {}
     for t, g in m.groupby("tour"):
+        t = str(t)
         part = g[g["source"].isin(PARTIAL_RESULT_SOURCES)] if "source" in g.columns \
             else g.iloc[0:0]
         broad = g.drop(part.index)
         glob = max(broad["date"]) if len(broad) else None
         cov: dict[str, dict] = {}
         for name, gg in part.groupby("tournament"):
-            key = canonical_event(str(t), str(name))
+            key = canonical_event(t, str(name))
             until = max(gg["date"])
             if key not in cov or until > cov[key]["until"]:
                 cov[key] = {"tournament": str(name), "until": until}
+        for key, c in (o_cov.get(t) or {}).items():
+            if key not in cov or c["until"] > cov[key]["until"]:
+                cov[key] = dict(c)
+        outcome_state = glob
+        if o_fresh.get(t) and (outcome_state is None or o_fresh[t] > outcome_state):
+            outcome_state = o_fresh[t]
         age = (today - glob).days if glob else 999
+        age_out = (today - outcome_state).days if outcome_state else 999
+        cov_fresh = any((today - c["until"]).days <= 2 for c in cov.values())
+        status = "FRESH" if age <= 2 else ("PARTIAL_FRESH" if cov_fresh else "STALE")
         if age <= 2:
-            status = "FRESH"
-        elif any((today - c["until"]).days <= 2 for c in cov.values()):
-            status = "PARTIAL_FRESH"
+            prod = "FRESH"
+        elif age_out <= 2 and cov_fresh:
+            prod = "PARTIAL"
         else:
-            status = "STALE"
-        out[str(t)] = {"global_history": glob, "active_coverage": cov,
-                       "coverage_status": status, "global_age_days": age}
+            prod = "STALE"
+        out[t] = {"global_history": glob, "outcome_state": outcome_state,
+                  "active_coverage": cov, "coverage_status": status,
+                  "global_age_days": age, "outcome_age_days": age_out,
+                  "production_feature_freshness": prod}
     return out
 
 
@@ -99,7 +125,9 @@ def default_results_sources(cfg: dict, allow_backfill: bool = False) -> list:
     fcfg = cfg.get("feeds", {})
     ttl = int(fcfg.get("ttl_seconds", 900))
     available = {
-        "oddsapi_scores": lambda: OddsApiScores(ttl_seconds=ttl),
+        "oddsapi_scores": lambda: OddsApiScores(
+            ttl_seconds=ttl,
+            max_sports=int(fcfg.get("oddsapi_scores_max_sports", 4))),
         "sportradar": lambda: SportradarResults(
             ttl_seconds=ttl, fresh_until=local_freshness(cfg),
             replay_days=int(fcfg.get("sportradar_replay_days", 2)),
@@ -216,7 +244,14 @@ def run_sync(cfg: dict, sources: list | None = None, days: int | None = None,
         "quarantine_sample": quarantined[:5],
         "rejected_sample": [r for r in rejected if "duplicado" not in r.get("error", "")][:5],
     })
-    if accepted and refresh:
+    # ---------- RECENT OUTCOMES (segundo nivel, almacén separado) ----------
+    # Ganador+sets del feed de scores: actualizan el ESTADO (Elo/actividad/
+    # experiencia) sin inventar marcadores. Jamás tocan matches.parquet.
+    outcome_rep = _ingest_outcomes(cfg, canon, sources, since, today)
+    if outcome_rep is not None:
+        report["outcomes"] = outcome_rep
+
+    if (accepted or (report.get("outcomes", {}).get("accepted", 0))) and refresh:
         from betbot.state import refresh_state
         report["state"] = refresh_state(cfg)
     # rankings derivados: regenerar SIEMPRE es barato e idempotente; así el
@@ -239,6 +274,83 @@ def run_sync(cfg: dict, sources: list | None = None, days: int | None = None,
                                               if k not in ("quarantine_sample", "rejected_sample")}},
                             ensure_ascii=False, default=str) + "\n")
     return report
+
+
+def _ingest_outcomes(cfg: dict, canon: Path, sources: list, since: date,
+                     today: date) -> dict | None:
+    """Recoge recent outcomes de las fuentes que los ofrezcan (fetch_outcomes),
+    resuelve identidades SIN aproximación difusa, deduplica contra el dataset
+    full (±1 día) y contra el propio almacén, y hace append en
+    recent_outcomes.parquet. Devuelve None si ninguna fuente los ofrece."""
+    from betbot.canonical.names import resolve_full_name
+    from betbot.canonical.outcomes import (OUTCOME_COLUMNS, append_outcomes,
+                                           unreconciled_outcomes)
+    from betbot.canonical.store import load_matches
+
+    statuses: list[SourceStatus] = []
+    fetched: list[dict] = []
+    for src in sources:
+        fo = getattr(src, "fetch_outcomes", None)
+        if not callable(fo):
+            continue
+        try:
+            recs, st = fo(since, today)
+        except Exception as exc:  # noqa: BLE001 - una fuente caída no detiene el sync
+            recs, st = [], SourceStatus(name=f"{getattr(src, 'name', '?')}:outcomes",
+                                        ok=False, error=str(exc))
+        statuses.append(st)
+        fetched.extend(recs)
+    if not statuses:
+        return None
+    rep: dict = {"sources": [{"name": s.name, "ok": s.ok, "n": s.n_items,
+                              "error": s.error, "notes": s.notes} for s in statuses],
+                 "fetched": len(fetched), "accepted": 0, "dup_full": 0,
+                 "dup_outcomes": 0, "unknown_players": 0}
+    if not fetched:
+        return rep
+    players_path = canon / "players.parquet"
+    registry = set(pd.read_parquet(players_path)["player_id"]) if players_path.exists() else set()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    rows: list[dict] = []
+    for r in fetched:
+        wk = resolve_full_name(str(r["winner_name"]), registry)
+        lk = resolve_full_name(str(r["loser_name"]), registry)
+        if wk not in registry or lk not in registry or wk == lk:
+            rep["unknown_players"] += 1       # jamás coincidencia difusa ni alta a ciegas
+            continue
+        a, b = sorted([wk, lk])
+        d = date.fromisoformat(str(r["date"]))
+        rows.append({
+            "event_id": r.get("event_id", ""), "date": d, "tour": r["tour"],
+            "tournament": r["tournament"], "surface": r.get("surface", ""),
+            "player_a": a, "player_b": b,
+            "label_a_wins": 1 if a == wk else 0,
+            "sets_a": int(r["sets_w"]) if a == wk else int(r["sets_l"]),
+            "sets_b": int(r["sets_l"]) if a == wk else int(r["sets_w"]),
+            "status": "completed", "retirement": r.get("retirement", "unknown"),
+            "source": r.get("source", "?"), "observed_at": now_iso,
+            "detail_level": "outcome_only",
+            "completion_confidence": r.get("completion_confidence", ""),
+            "canonical_match_id": f"{r['tour']}_{d.isoformat()}_{a}__{b}",
+        })
+    if not rows:
+        return rep
+    df = pd.DataFrame(rows)[OUTCOME_COLUMNS]
+    try:
+        full = load_matches(canon)
+    except FileNotFoundError:
+        full = pd.DataFrame(columns=["tour", "player_a", "player_b", "date"])
+    keep = unreconciled_outcomes(df, full)
+    rep["dup_full"] = int(len(df) - len(keep))
+    n_new = append_outcomes(canon, keep)
+    rep["dup_outcomes"] = int(len(keep) - n_new)
+    rep["accepted"] = n_new
+    rep["sample"] = [
+        f"{r.tournament} {r.date}: {r.player_a if r.label_a_wins else r.player_b} d. "
+        f"{r.player_b if r.label_a_wins else r.player_a} {max(r.sets_a, r.sets_b)}-"
+        f"{min(r.sets_a, r.sets_b)} [{r.completion_confidence}]"
+        for r in keep.head(5).itertuples(index=False)]
+    return rep
 
 
 def _register_new_players(canon: Path, accepted: list[dict], registry: set) -> int:

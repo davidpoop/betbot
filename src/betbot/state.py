@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 import joblib
 import pandas as pd
 
-from betbot.canonical.store import load_matches
 from betbot.config import resolve_path
 from betbot.features.builder import build_features, derived_targets
 from betbot.ratings.elo import replay
@@ -25,7 +24,12 @@ def refresh_state(cfg: dict) -> dict:
     if not bundle_path.exists():
         return {"state": "sin bundle: ejecuta 'betbot train' primero"}
     bundle = joblib.load(bundle_path)
-    matches = load_matches(canon)
+    # estado operativo = full canonical UNION recent outcomes sin equivalente
+    # full (dedupe ±1 día): el Elo/actividad/experiencia de un partido cuentan
+    # exactamente UNA vez; cuando TML publica el resultado completo, el full
+    # sustituye al outcome en la siguiente reconstrucción (determinista).
+    from betbot.canonical.outcomes import load_state_matches
+    matches = load_state_matches(canon)
     players = pd.read_parquet(canon / "players.parquet")
     elo_df, elo_states = replay(matches, cfg["elo"])
     feats_all, activity_state = build_features(elo_df, players, cfg)
