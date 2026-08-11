@@ -208,52 +208,119 @@ def _pick_block(i: int, o: Opportunity) -> list[str]:
     return L
 
 
-def degraded_banner(summary: dict) -> str | None:
-    """Aviso de frescura POR CAPACIDAD (semántica del mandato de dos niveles):
+def _age_days(ref: str, iso: str | None) -> int | None:
+    if not iso:
+        return None
+    try:
+        return (date.fromisoformat(str(ref)) - date.fromisoformat(str(iso))).days
+    except ValueError:
+        return 0
 
-    - production_feature_freshness == STALE en algún tour -> MODO DEGRADADO
-      severo (las features que usa la probabilidad están viejas).
-    - PARTIAL -> aviso ligero y honesto: el estado predictivo (Elo/actividad/
-      experiencia) está al día en los torneos cubiertos por outcomes, pero el
-      detalle de marcadores completos va con retraso (retired_recent y
-      rankings parciales) y el resto del circuito sigue midiendo contra la
-      frescura global. Ni banner severo ni verde artificial.
-    - FRESH en todos -> sin banner."""
+
+def _rankings_line(t: str, summary: dict) -> str:
+    """El ✓ de rankings significa algo concreto: DENTRO de la política real
+    del sistema (rankings.max_age_days), no 'el fichero existe'."""
+    r = (summary.get("rankings_status") or {}).get(t) or {}
+    if not r.get("published"):
+        return f"⚠ rankings {t}: ausentes (fallback Elo)"
+    age, cap = r.get("age_days"), r.get("max_age_days", 45)
+    ok = r.get("within_policy", (age is not None and age <= cap and not r.get("warnings")))
+    mark = "✓" if ok else "⚠"
+    tail = "" if ok else " FUERA DE POLÍTICA"
+    return (f"{mark} rankings {t} efectivos {r['published']} "
+            f"({age}d de {cap} permitidos){tail}")
+
+
+def _partial_block(t: str, iso: str, age: int, cap: dict, covered: list,
+                   summary: dict) -> list[str]:
+    """Bloque honesto: qué está al día (features) y qué no (marcadores)."""
+    lines = [f"⚠ FRESCURA PARCIAL {t}"]
+    for c in covered[:4]:
+        name = c["tournament"] if isinstance(c, dict) else str(c)
+        until = c.get("until", "?") if isinstance(c, dict) else "?"
+        lines.append(f"   ✓ outcome state {name} hasta {until}")
+    lines.append("   ✓ Elo, Elo de superficie, actividad (rest/m14/m12m/layoff) y "
+                 "experiencia actualizados con recent outcomes")
+    lines.append("   ✓ already_completed cubre también esos partidos recientes")
+    lines.append(f"   ⚠ marcadores completos hasta {iso} ({age}d): juegos, set1 y "
+                 f"stats de servicio siguen atrasados")
+    lines.append("   ⚠ retired_recent incompleto en outcome-only: la retirada no se "
+                 "conoce y jamás se inventa")
+    lines.append("   " + _rankings_line(t, summary))
+    return lines
+
+
+def degraded_banner(summary: dict) -> str | None:
+    """Aviso de frescura CONTEXTUAL y por capacidad.
+
+    Distingue FULL RESULT FRESHNESS (marcadores completos) de OPERATIONAL/
+    FEATURE FRESHNESS (lo que alimenta a M4/M5) y lo aplica al CONTEXTO real
+    de la jornada:
+    - torneo analizado CON cobertura reciente -> FRESCURA PARCIAL (las
+      features están al día; el detalle de marcadores no);
+    - torneo analizado SIN cobertura reciente -> MODO DEGRADADO para ese tour,
+      nombrando los torneos afectados;
+    - tour con retraso pero SIN partidos analizados -> nota de sistema
+      separada: jamás contamina la calidad de las picks del otro circuito;
+    - todo fresco -> sin banner."""
     ref = str(summary.get("date"))
     fresh = summary.get("results_freshness") or {}
     cov = summary.get("results_coverage") or {}
-    severe, partial = [], []
+    analyzed = summary.get("analyzed_coverage") or {}
+    lines: list[str] = []
+    notes: list[str] = []
     for t in ("ATP", "WTA"):
         iso = fresh.get(t)
-        if not iso:
-            severe.append(f"{t} sin datos")
-            continue
-        try:
-            age = (date.fromisoformat(ref) - date.fromisoformat(iso)).days
-        except ValueError:
-            age = 0
-        if age <= 2:
-            continue
         c = cov.get(t) or {}
-        if c.get("production_feature_freshness") == "PARTIAL":
-            names = [cc["tournament"] for cc in (c.get("active_coverage") or {}).values()]
-            partial.append(f"{t}: estado predictivo AL DÍA (outcomes hasta "
-                           f"{c.get('outcome_state', '?')} en {', '.join(names[:3])}); "
-                           f"marcadores completos con {age}d de retraso")
+        an = analyzed.get(t) or {}
+        # sin contexto de jornada (llamadas directas/paneles) se evalúan todos
+        is_analyzed = bool(an.get("n_matches")) if analyzed else True
+        age = _age_days(ref, iso)
+        if age is None:
+            (lines if is_analyzed else notes).append(f"⚠ {t}: sin datos de resultados")
+            continue
+        if age <= 2:
+            continue                                  # full fresco: nada que avisar
+        prod = c.get("production_feature_freshness")
+        if analyzed:
+            # con contexto de jornada manda el contexto: un torneo NO cubierto
+            # jamás hereda el bloque PARCIAL de otro torneo del mismo circuito
+            covered = list(an.get("covered") or [])
         else:
-            severe.append(f"{t} {age}d")
-    if severe:
-        return (f"⚠ MODO DEGRADADO — resultados con retraso ({', '.join(severe)}). "
-                f"Afecta a: verificación already_completed (solo cubre hasta esa "
-                f"fecha), Elo y actividad/OOD (medidos con datos viejos) y fuentes "
-                f"sin evidencia de juego (exigen corroboración independiente). No se "
-                f"oculta ninguna señal bloqueada por esto: ver `--verbose`."
-                + ((" " + " · ".join(partial)) if partial else ""))
-    if partial:
-        return ("⚠ FRESCURA PARCIAL — " + " · ".join(partial) + ". retired_recent "
-                "queda sin evidencia en esos partidos (jamás se inventa) y el resto "
-                "del circuito sigue contra la frescura global.")
-    return None
+            # sin contexto (paneles/llamadas directas) la cobertura global sirve
+            covered = [{"tournament": cc["tournament"], "until": str(cc["until"])}
+                       for cc in (c.get("active_coverage") or {}).values()]
+        uncovered = list(an.get("uncovered") or [])
+        if not is_analyzed:
+            estado = ("cobertura reciente PARCIAL" if prod == "PARTIAL"
+                      else "sin cobertura reciente")
+            notes.append(f"{t}: {estado} · histórico completo hasta {iso} ({age}d) — "
+                         f"no hay picks {t} en esta jornada, así que no afecta a las "
+                         f"probabilidades mostradas")
+            continue
+        if prod == "PARTIAL" and covered:
+            lines += _partial_block(t, iso, age, c, covered, summary)
+            if uncovered:
+                lines.append(f"⚠ MODO DEGRADADO {t} — sin cobertura reciente para: "
+                             f"{', '.join(uncovered[:4])}. Ahí Elo y actividad/OOD se "
+                             f"miden con datos viejos y already_completed solo cubre "
+                             f"hasta {iso}.")
+        else:
+            lines.append(
+                f"⚠ MODO DEGRADADO {t} — resultados con retraso ({age}d, hasta {iso}) "
+                f"y sin cobertura reciente suficiente"
+                + (f" para: {', '.join(uncovered[:4])}" if uncovered else "")
+                + ". Afecta a: verificación already_completed (solo cubre hasta esa "
+                  "fecha), Elo y actividad/OOD (medidos con datos viejos) y fuentes "
+                  "sin evidencia de juego (exigen corroboración independiente).")
+            lines.append("   " + _rankings_line(t, summary))
+    if not lines and not notes:
+        return None
+    if notes:
+        lines.append("Nota de sistema (no afecta a las picks de esta jornada): "
+                     + " · ".join(notes))
+    lines.append("No se oculta ninguna señal bloqueada por esto: ver `--verbose`.")
+    return "\n".join(lines)
 
 
 def render_daily(res, show_watch: bool = False) -> str:
@@ -274,34 +341,30 @@ def render_daily(res, show_watch: bool = False) -> str:
     # ---- sección "Datos": estado honesto por capacidad, sin verde artificial ----
     L.append("Datos:")
     fresh = s.get("results_freshness") or {}
-    parts = []
+    analyzed = s.get("analyzed_coverage") or {}
     for t in ("ATP", "WTA"):
         iso = fresh.get(t)
         if not iso:
-            parts.append(f"⚠ resultados {t}: sin datos")
+            L.append(f"  ⚠ resultados {t}: sin datos")
             continue
-        try:
-            age = (date.fromisoformat(str(s.get("date"))) - date.fromisoformat(iso)).days
-        except ValueError:
-            age = 0
-        mark = "✓" if age <= 1 else "⚠"
+        age = _age_days(str(s.get("date")), iso) or 0
         cov = (s.get("results_coverage") or {}).get(t) or {}
-        tail = ""
-        if cov.get("coverage_status") == "PARTIAL_FRESH":
-            names = [c["tournament"] for c in (cov.get("active_coverage") or {}).values()]
-            tail = f" · PARTIAL_FRESH ({', '.join(names[:2])})"
-        parts.append(f"{mark} resultados {t} hasta {iso} ({age}d){tail}")
-    L.append("  " + "  ·  ".join(parts))
-    rks = s.get("rankings_status") or {}
-    parts = []
-    for t in ("ATP", "WTA"):
-        r = rks.get(t) or {}
-        if r.get("published"):
-            mark = "⚠" if (r.get("age_days") or 0) > 45 or r.get("warnings") else "✓"
-            parts.append(f"{mark} rankings {t} {r['published']} ({r['n']})")
-        else:
-            parts.append(f"⚠ rankings {t}: ausentes (fallback Elo)")
-    L.append("  " + "  ·  ".join(parts))
+        prod = cov.get("production_feature_freshness")
+        mark = "✓" if age <= 1 else ("~" if prod == "PARTIAL" else "⚠")
+        sin_picks = "" if (not analyzed or (analyzed.get(t) or {}).get("n_matches")) \
+            else "  (sin partidos analizados hoy)"
+        L.append(f"  {mark} resultados {t}: marcadores completos hasta {iso} ({age}d)"
+                 f"{sin_picks}")
+        by_t = (cov.get("outcome_state") or {}).get("by_tournament") or {}
+        for c in list(by_t.values())[:3]:
+            m2 = "✓" if c.get("status") == "FRESH" else "⚠"
+            L.append(f"      {m2} outcome state {c['tournament']} hasta {c['until']} "
+                     f"({c['age_days']}d)")
+        if prod:
+            L.append(f"      estado predictivo (Elo/actividad/experiencia): {prod}"
+                     + (" · retired_recent PARTIAL (outcome-only no conoce la retirada)"
+                        if prod == "PARTIAL" else ""))
+    L.append("  " + "  ·  ".join(_rankings_line(t, s) for t in ("ATP", "WTA")))
     ss = s.get("surface_sources") or {}
     n_conf = ss.get("official", 0) + ss.get("tournament_registry", 0)
     n_inf = ss.get("inferred", 0)

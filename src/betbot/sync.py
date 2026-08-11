@@ -426,6 +426,94 @@ def _near_duplicate_mask(df: pd.DataFrame, canon: Path, since: date,
     return pd.Series(mask, index=df.index)
 
 
+def capability_freshness(cfg: dict, today: date | None = None,
+                         rankings: dict | None = None) -> dict:
+    """Frescura POR CAPACIDAD y por tour — el desglose que consume el banner.
+
+    Distingue explícitamente FULL RESULT FRESHNESS (marcadores completos) de
+    OPERATIONAL/FEATURE FRESHNESS (lo que realmente alimenta a M4/M5):
+
+      full_scores        marcador completo por juegos (github/TML, tennis-data)
+      outcome_state      ganador+sets recientes, POR TORNEO (recent outcomes)
+      features.elo       Elo global      — outcome-only basta
+      features.elo_surface                — outcome-only basta si hay superficie
+      features.activity  rest/m14/m12m/layoff — outcome-only basta (solo fechas)
+      features.experience                 — outcome-only basta
+      features.retired_recent             — PARTIAL: outcome_only no conoce la
+                                            retirada (jamás se inventa)
+      features.rankings  log_rank/log_pts — política REAL del sistema
+                                            (rankings.max_age_days), no una
+                                            regla inventada de 2 días
+      features.full_score_dependent       — juegos/set1/stats: solo del full
+
+    `production_feature_freshness` = FRESH | PARTIAL | STALE agregando SOLO las
+    capacidades que el champion consume de resultados recientes."""
+    today = today or datetime.now(timezone.utc).date()
+    detail = freshness_detail(cfg, today=today)
+    max_age = int(cfg.get("rankings", {}).get("max_age_days", 45))
+    out: dict = {}
+    for t, d in detail.items():
+        glob, o_state = d["global_history"], d["outcome_state"]
+        age_full = d["global_age_days"]
+        age_out = d["outcome_age_days"]
+        full_status = "FRESH" if age_full <= 2 else "STALE"
+        by_t = {k: {"tournament": c["tournament"], "until": str(c["until"]),
+                    "age_days": (today - c["until"]).days,
+                    "status": "FRESH" if (today - c["until"]).days <= 2 else "STALE"}
+                for k, c in d["active_coverage"].items()}
+        covered_fresh = any(c["status"] == "FRESH" for c in by_t.values())
+        # capacidades alimentadas por outcome-only: frescas si el full lo está
+        # o si hay cobertura reciente demostrada (y entonces, POR TORNEO)
+        if full_status == "FRESH":
+            feat_status, feat_src = "FRESH", "full_scores"
+        elif age_out <= 2 and covered_fresh:
+            feat_status, feat_src = "FRESH_EN_TORNEOS_CUBIERTOS", "recent_outcomes"
+        else:
+            feat_status, feat_src = "STALE", "full_scores"
+        rk = (rankings or {}).get(t) or {}
+        rk_age = rk.get("age_days")
+        rk_status = ("SIN_DATOS" if not rk.get("published") else
+                     "FRESH" if (rk_age is not None and rk_age <= max_age
+                                 and not rk.get("warnings")) else "STALE")
+        feats = {
+            "elo": {"status": feat_status, "source": feat_src},
+            "elo_surface": {"status": feat_status, "source": feat_src,
+                            "nota": "solo con superficie conocida"},
+            "activity": {"status": feat_status, "source": feat_src,
+                         "cubre": "rest, m14, m12m, layoff"},
+            "experience": {"status": feat_status, "source": feat_src},
+            "retired_recent": {
+                "status": "FRESH" if full_status == "FRESH" else "PARTIAL",
+                "source": "full_scores",
+                "nota": "outcome_only no conoce la retirada: no se marca ni se inventa"},
+            "rankings": {"status": rk_status, "effective_date": rk.get("published"),
+                         "age_days": rk_age, "max_age_days": max_age,
+                         "politica": f"válidos hasta {max_age} días (rankings.max_age_days)"},
+            "full_score_dependent": {
+                "status": full_status, "source": "full_scores",
+                "cubre": "juegos, set1, sets exactos, stats de servicio"},
+        }
+        if full_status == "FRESH":
+            prod = "FRESH"
+        elif feat_status == "STALE":
+            prod = "STALE"
+        else:
+            prod = "PARTIAL"          # features al día, retired_recent incompleto
+        out[t] = {
+            "full_scores": {"until": str(glob) if glob else None,
+                            "age_days": age_full, "status": full_status},
+            "outcome_state": {"until": str(o_state) if o_state else None,
+                              "age_days": age_out,
+                              "by_tournament": by_t},
+            "features": feats,
+            "active_coverage": {k: {"tournament": c["tournament"], "until": str(c["until"])}
+                                for k, c in d["active_coverage"].items()},
+            "coverage_status": d["coverage_status"],
+            "production_feature_freshness": prod,
+        }
+    return out
+
+
 def freshness_header(cfg: dict) -> str:
     detail = freshness_detail(cfg)
     today = datetime.now(timezone.utc).date()

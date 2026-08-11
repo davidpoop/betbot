@@ -14,6 +14,10 @@ from betbot.feeds.base import SourceStatus
 STATUS_CLASSES = ("OK_CON_DATOS", "OK_SIN_COBERTURA", "INACTIVO_CONFIG",
                   "FALLO_TEMPORAL", "FALLO_ESTRUCTURAL")
 
+# Fuentes de PAGO/suscripción: su ausencia es una elección, no una avería. No
+# cuentan para la salud del producto ni son requisito para retirar avisos.
+OPTIONAL_SOURCES = frozenset({"sportradar", "betfair"})
+
 
 def classify_status(entry) -> str:
     """Semántica honesta del estado de una fuente. 'OK 0 items' NO es cobertura:
@@ -141,14 +145,21 @@ def feeds_matrix(cfg: dict, hours: int = 48) -> str:
             ms, st = [], SourceStatus(name=getattr(src, "name", "?"), ok=False,
                                       error=str(exc))
         cls = classify_status({"ok": st.ok, "error": st.error, "n": st.n_items})
+        # fuentes OPCIONALES (requieren suscripción de pago): sin credencial
+        # son INACTIVO_CONFIG opcional, jamás un fallo del producto
+        opt = " (OPCIONAL, sin suscripción)" if (st.name in OPTIONAL_SOURCES
+                                                 and cls == "INACTIVO_CONFIG") else ""
         for t in ("ATP", "WTA"):
             if t not in sup:
                 continue
             n_t = sum(1 for m in ms if m.tour == t)
             cal_status[t].append(
-                f"{st.name}: {cls}" + (f" ({n_t} partidos)" if n_t else ""))
+                f"{st.name}: {cls}{opt}" + (f" ({n_t} partidos)" if n_t else ""))
     # --- resultados (fallbacks también filtrados por tour declarado) ---
+    from betbot.scan import _rankings_status
+    from betbot.sync import capability_freshness
     fresh = local_freshness(cfg)
+    caps = capability_freshness(cfg, today=today, rankings=_rankings_status(cfg))
     res_srcs = default_results_sources(cfg)
 
     def res_names_for(t: str) -> list[str]:
@@ -174,13 +185,25 @@ def feeds_matrix(cfg: dict, hours: int = 48) -> str:
         if cap == "calendar":
             return " · ".join(cal_status[t]) or "SIN FUENTE"
         if cap == "results":
+            # arquitectura de DOS NIVELES: histórico completo + outcome state
+            c = caps.get(t) or {}
+            full = c.get("full_scores") or {}
             f = fresh.get(t)
             age = (today - f).days if f else None
-            primary = ("wta_official (mismo día)" if t == "WTA"
-                       else "github/TML (diario si upstream publica) · oddsapi_scores "
-                            "parcial (solo si el payload trae marcador por sets)")
-            return (f"hasta {f} ({age}d) · primaria {primary} · "
-                    f"fallbacks {', '.join(res_names_for(t))}")
+            by_t = (c.get("outcome_state") or {}).get("by_tournament") or {}
+            lines = [f"full canonical: {f} ({age}d) [{full.get('status', '?')}]"]
+            if by_t:
+                lines.append("recent outcome state:")
+                lines += [f"    {x['tournament']}: {x['until']} ({x['age_days']}d) "
+                          f"[{x['status']}]" for x in list(by_t.values())[:4]]
+            else:
+                lines.append("recent outcome state: (sin cobertura reciente)")
+            lines.append(f"production freshness: {c.get('production_feature_freshness', '?')}")
+            recent = "oddsapi_scores (outcome_only)" if t == "ATP" else "wta_official"
+            lines.append(f"source recent: {recent} · source full: github/TML"
+                         + (" · wta_official" if t == "WTA" else ""))
+            lines.append(f"fallbacks: {', '.join(res_names_for(t))}")
+            return ("\n      ").join(lines)
         if cap == "rankings":
             return rank_status[t] + " · derived_from_results"
         if cap == "surface":

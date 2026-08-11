@@ -254,16 +254,23 @@ def test_adapters_declare_supported_tours():
 
 
 def _matrix_sections(text: str) -> dict:
-    """{'CALENDARIO': {'ATP': cell, 'WTA': cell}, ...} del texto de la matriz."""
+    """{'CALENDARIO': {'ATP': cell, 'WTA': cell}, ...} del texto de la matriz.
+    Las celdas pueden ocupar VARIAS líneas (resultados de dos niveles): las
+    continuaciones indentadas se unen a la celda del tour en curso."""
     out: dict = {}
     section = None
+    tour = None
     for line in text.splitlines():
         if line and not line.startswith(" ") and line.upper() == line and ":" not in line:
-            section = line.strip()
+            section, tour = line.strip(), None
             out.setdefault(section, {})
         elif section and line.strip().startswith(("ATP:", "WTA:")):
-            t, cell = line.strip().split(":", 1)
-            out[section][t] = cell.strip()
+            tour, cell = line.strip().split(":", 1)
+            out[section][tour] = cell.strip()
+        elif section and tour and line.startswith("      "):
+            out[section][tour] += " | " + line.strip()
+        elif not line.strip():
+            tour = None
     return out
 
 

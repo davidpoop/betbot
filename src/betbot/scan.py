@@ -110,14 +110,12 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
                             "sources", "window")}
         except Exception as exc:  # noqa: BLE001 - el sync nunca detiene el scan
             sync_report = {"error": str(exc)}
+    rankings_status = _rankings_status(cfg)
     try:
-        from betbot.sync import freshness_detail, local_freshness
+        from betbot.sync import capability_freshness, local_freshness
         results_freshness = {k: str(v) for k, v in local_freshness(cfg).items()}
-        results_coverage = {
-            t: {"coverage_status": d["coverage_status"],
-                "active_coverage": {k: {"tournament": c["tournament"], "until": str(c["until"])}
-                                    for k, c in d["active_coverage"].items()}}
-            for t, d in freshness_detail(cfg).items()}
+        # frescura POR CAPACIDAD: full_scores vs estado operativo (features)
+        results_coverage = capability_freshness(cfg, rankings=rankings_status)
     except Exception:  # noqa: BLE001
         results_freshness = {}
         results_coverage = {}
@@ -350,7 +348,8 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
         "stale_discarded": n_stale,
         "states": state_counts,
         "surface_sources": surface_sources,
-        "rankings_status": _rankings_status(cfg),
+        "rankings_status": rankings_status,
+        "analyzed_coverage": _analyzed_coverage(eligible, results_coverage),
         "results_freshness": results_freshness,
         "results_coverage": results_coverage,
         "sync": sync_report,
@@ -406,22 +405,56 @@ def _classify(s: SourceStatus) -> str:
     return classify_status({"ok": s.ok, "error": s.error, "n": s.n_items})
 
 
+def _analyzed_coverage(eligible: list, coverage: dict) -> dict:
+    """Cobertura reciente de los torneos REALMENTE analizados en esta jornada.
+
+    El banner necesita contexto: un ATP con retraso global solo degrada las
+    picks de los torneos ATP SIN cobertura reciente, y no dice nada sobre las
+    probabilidades WTA de la misma jornada."""
+    from betbot.tournaments import canonical_event
+    out: dict = {}
+    for m in eligible:
+        t = str(m.tour)
+        cov = ((coverage.get(t) or {}).get("outcome_state") or {}).get("by_tournament") or {}
+        key = canonical_event(t, str(m.tournament))
+        entry = out.setdefault(t, {"n_matches": 0, "covered": [], "uncovered": [],
+                                   "_seen": set()})
+        entry["n_matches"] += 1
+        if key in entry["_seen"]:
+            continue
+        entry["_seen"].add(key)
+        c = cov.get(key)
+        if c and c.get("status") == "FRESH":
+            entry["covered"].append({"tournament": str(m.tournament), "until": c["until"]})
+        else:
+            entry["uncovered"].append(str(m.tournament))
+    for entry in out.values():
+        entry.pop("_seen", None)
+    return out
+
+
 def _rankings_status(cfg: dict) -> dict:
     """Estado de los rankings cargables AHORA (fecha efectiva, tamaño, edad)."""
     from betbot.config import resolve_path
     from betbot.ingest.rankings import load_rankings
     out = {}
     today = date.today()
+    max_age = int(cfg.get("rankings", {}).get("max_age_days", 45))
     for tour in ("ATP", "WTA"):
         try:
-            rk = load_rankings(resolve_path(cfg, "manual_dir"), tour, today,
-                               int(cfg.get("rankings", {}).get("max_age_days", 45)))
+            rk = load_rankings(resolve_path(cfg, "manual_dir"), tour, today, max_age)
+            age = (today - rk.published).days if rk.published else None
             out[tour] = {"published": str(rk.published) if rk.published else None,
-                         "n": len(rk.by_player),
-                         "age_days": (today - rk.published).days if rk.published else None,
+                         "n": len(rk.by_player), "age_days": age,
+                         "max_age_days": max_age,
+                         # ✓ solo si la publicación está DENTRO de la política real
+                         # del sistema (rankings.max_age_days), no por existir
+                         "within_policy": bool(rk.published and age is not None
+                                               and age <= max_age and not rk.warnings),
                          "warnings": rk.warnings[:2]}
         except Exception as exc:  # noqa: BLE001
             out[tour] = {"published": None, "n": 0, "age_days": None,
+                         "max_age_days": max_age, "within_policy": False,
                          "warnings": [str(exc)]}
     return out
 
