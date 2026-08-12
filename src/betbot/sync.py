@@ -26,6 +26,26 @@ from betbot.ingest.manual_results import prepare_rows
 # del Canadian Open no convierte en "fresco" al resto del ATP.
 PARTIAL_RESULT_SOURCES = ("sync:oddsapi_scores",)
 
+# ---------------------------------------------------------------------------
+# POLÍTICA ÚNICA de frescura de MARCADORES COMPLETOS (full canonical).
+# La consumen capability_freshness, la matriz de capacidades, el banner del
+# scan y la puerta prepartido: ninguno puede tener su propio umbral. Si dos
+# capas discrepan sobre un mismo (tour, fecha) es un bug, no una decisión.
+# 2 días: los mirrors publican con un retraso normal de hasta ~1 día y un
+# margen extra evita declarar stale un circuito que simplemente no jugó ayer.
+# ---------------------------------------------------------------------------
+FULL_RESULTS_FRESH_MAX_AGE_DAYS = 2
+
+
+def is_full_results_fresh(until: date | None, today: date,
+                          max_age_days: int = FULL_RESULTS_FRESH_MAX_AGE_DAYS) -> bool:
+    """¿Los marcadores completos hasta `until` están dentro de política?"""
+    return until is not None and (today - until).days <= max_age_days
+
+
+def full_results_status(until: date | None, today: date) -> str:
+    return "FRESH" if is_full_results_fresh(until, today) else "STALE"
+
 
 def local_freshness(cfg: dict) -> dict[str, date]:
     """Frescura GLOBAL honesta por tour: máximo de las filas de cobertura
@@ -91,8 +111,9 @@ def freshness_detail(cfg: dict, today: date | None = None) -> dict:
         age = (today - glob).days if glob else 999
         age_out = (today - outcome_state).days if outcome_state else 999
         cov_fresh = any((today - c["until"]).days <= 2 for c in cov.values())
-        status = "FRESH" if age <= 2 else ("PARTIAL_FRESH" if cov_fresh else "STALE")
-        if age <= 2:
+        full_fresh = is_full_results_fresh(glob, today)      # política ÚNICA
+        status = "FRESH" if full_fresh else ("PARTIAL_FRESH" if cov_fresh else "STALE")
+        if full_fresh:
             prod = "FRESH"
         elif age_out <= 2 and cov_fresh:
             prod = "PARTIAL"
@@ -456,7 +477,7 @@ def capability_freshness(cfg: dict, today: date | None = None,
         glob, o_state = d["global_history"], d["outcome_state"]
         age_full = d["global_age_days"]
         age_out = d["outcome_age_days"]
-        full_status = "FRESH" if age_full <= 2 else "STALE"
+        full_status = full_results_status(glob, today)       # política ÚNICA
         by_t = {k: {"tournament": c["tournament"], "until": str(c["until"]),
                     "age_days": (today - c["until"]).days,
                     "status": "FRESH" if (today - c["until"]).days <= 2 else "STALE"}
@@ -524,7 +545,8 @@ def freshness_header(cfg: dict) -> str:
             lines.append(f"  {t}: sin datos")
             continue
         age = (today - d["global_history"]).days
-        warn = "" if age <= 2 else f"  ⚠ {age} días de retraso"
+        warn = ("" if is_full_results_fresh(d["global_history"], today)
+                else f"  ⚠ {age} días de retraso")
         lines.append(f"  {t}: historial global hasta {d['global_history']}{warn}")
         for c in d["active_coverage"].values():
             lines.append(f"      cobertura activa parcial: {c['tournament']} "

@@ -31,7 +31,8 @@ NOW_ISO = NOW.isoformat()
 LO, HI = NOW - timedelta(days=1), NOW + timedelta(hours=48)
 PLACEHOLDER = "2026-08-06T03:59:00Z"
 FRESH_OK = {"ATP": NOW.date(), "WTA": NOW.date()}
-STALE = {"ATP": datetime(2026, 8, 3).date(), "WTA": datetime(2026, 8, 3).date()}
+# fuera de politica (>2 dias respecto a NOW=2026-08-05): stale de verdad
+STALE = {"ATP": datetime(2026, 8, 1).date(), "WTA": datetime(2026, 8, 1).date()}
 
 
 @pytest.fixture()
@@ -328,14 +329,15 @@ def test_played_match_excluded_even_if_state_says_scheduled(cfg):
 # --------------------------------------------------------------------------
 
 def test_stale_results_block_schedule_only_source(cfg):
-    """Resultados hasta 2026-08-03 y hoy es 08-05: sin fuente live independiente
-    no se puede afirmar que un partido de hoy siga por jugar."""
+    """Resultados hasta 2026-08-01 y hoy es 08-05 (4d, fuera de la politica de
+    2d): sin fuente live independiente no se puede afirmar que un partido de
+    hoy siga por jugar."""
     out, _, _ = WtaOfficialCalendar.parse_matches(
         [_ls052(MatchTimeStamp="2026-08-05T18:00:00Z")], NOW_ISO, LO, HI)
     res = gate(out, cfg, now=NOW, completed_idx={}, fresh_until=STALE)
     assert res.eligible == []
     assert res.counts()["results_feed_stale_pre_match_unverified"] == 1
-    assert "2026-08-03" in list(res.details.values())[0]
+    assert "2026-08-01" in list(res.details.values())[0]
 
 
 def test_stale_results_do_not_block_live_verified_source(cfg):

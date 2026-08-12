@@ -270,10 +270,11 @@ def test_fallback_takes_over_when_espn_fails(cfg, monkeypatch):
 
 def test_schedule_only_source_blocked_when_results_are_stale(cfg, monkeypatch):
     """Una fuente que publica estado SIN evidencia de juego no basta si los
-    resultados locales no llegan al dia en curso: no se puede saber si el
-    partido ya se jugo."""
+    resultados locales estan FUERA DE POLITICA (mas de 2 dias de retraso): no
+    se puede saber si el partido ya se jugo. Dentro de politica (<=2d) no se
+    bloquea: la puerta usa la MISMA politica que capability_freshness."""
     monkeypatch.setattr("betbot.prematch.results_freshness",
-                        lambda cfg: {"WTA": NOW.date() - timedelta(days=2)})
+                        lambda cfg: {"WTA": NOW.date() - timedelta(days=5)})
     out, _, _ = TheSportsDBCalendar.parse_day(
         {"events": [_tsdb_event(strLeague="WTA Tour",
                                 strHomeTeam="Iga Swiatek", strAwayTeam="Coco Gauff")]},
@@ -283,7 +284,8 @@ def test_schedule_only_source_blocked_when_results_are_stale(cfg, monkeypatch):
     assert res.eligible == []
     assert res.counts()["results_feed_stale_pre_match_unverified"] == 1
     detalle = list(res.details.values())[0]
-    assert "sin evidencia de juego" in detalle and "2026-08-03" in detalle
+    assert "sin evidencia de juego" in detalle
+    assert "fuera de la política de 2d" in detalle    # política ÚNICA citada
 
 
 def test_fail_closed_still_applies_when_all_calendars_fail(cfg):

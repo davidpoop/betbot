@@ -219,6 +219,19 @@ def _age_days(ref: str, iso: str | None) -> int | None:
         return 0
 
 
+def _within_policy(iso: str | None, ref: str) -> bool:
+    """Política ÚNICA de frescura de marcadores completos (sync.py): la misma
+    que usan capability_freshness, la matriz y la puerta prepartido."""
+    from betbot.sync import is_full_results_fresh
+    if not iso:
+        return False
+    try:
+        return is_full_results_fresh(date.fromisoformat(str(iso)),
+                                     date.fromisoformat(str(ref)))
+    except ValueError:
+        return True
+
+
 def _rankings_line(t: str, summary: dict) -> str:
     """El ✓ de rankings significa algo concreto: DENTRO de la política real
     del sistema (rankings.max_age_days), no 'el fichero existe'."""
@@ -281,8 +294,8 @@ def degraded_banner(summary: dict) -> str | None:
         if age is None:
             (lines if is_analyzed else notes).append(f"⚠ {t}: sin datos de resultados")
             continue
-        if age <= 2:
-            continue                                  # full fresco: nada que avisar
+        if _within_policy(iso, ref):
+            continue                      # dentro de política: no es un fallo                                  # full fresco: nada que avisar
         prod = c.get("production_feature_freshness")
         if analyzed:
             # con contexto de jornada manda el contexto: un torneo NO cubierto
@@ -367,7 +380,8 @@ def render_daily(res, show_watch: bool = False) -> str:
         age = _age_days(str(s.get("date")), iso) or 0
         cov = (s.get("results_coverage") or {}).get(t) or {}
         prod = cov.get("production_feature_freshness")
-        mark = "✓" if age <= 1 else ("~" if prod == "PARTIAL" else "⚠")
+        mark = ("✓" if _within_policy(iso, str(s.get("date")))
+                else ("~" if prod == "PARTIAL" else "⚠"))
         sin_picks = "" if (not analyzed or (analyzed.get(t) or {}).get("n_matches")) \
             else "  (sin partidos analizados hoy)"
         L.append(f"  {mark} resultados {t}: marcadores completos hasta {iso} ({age}d)"

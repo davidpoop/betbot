@@ -176,7 +176,7 @@ def test_wta_fresh_path_unchanged(tmp_path):
     res = gate([m], cfg, now=NOW, completed_idx={}, registry=set(),
                fresh_until={"ATP": date(2026, 8, 3), "WTA": TODAY}, coverage={})
     assert len(res.eligible) == 1
-    assert res.confirmations[m.pair_key]["results_check"] == "full_frescos"
+    assert res.confirmations[m.pair_key]["results_check"].startswith("full_frescos")
 
 
 # ---------------------------------------------- BUG 1B: mensaje no circular

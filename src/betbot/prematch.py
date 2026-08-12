@@ -319,21 +319,30 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
             cov_until = _coverage_until(coverage, m.tour, m.tournament)
             cov_fresh = (cov_until is not None
                          and (now.date() - cov_until).days <= COVERAGE_FRESH_MAX_AGE_DAYS)
-            global_fresh = f is not None and f >= now.date()
+            # POLÍTICA ÚNICA: la misma que capability_freshness y la matriz. El
+            # gate NO define su propio umbral (antes exigía fecha de HOY, lo que
+            # contradecía un WTA de ayer declarado FRESH por la capa de
+            # capacidades).
+            from betbot.sync import (FULL_RESULTS_FRESH_MAX_AGE_DAYS,
+                                     is_full_results_fresh)
+            global_fresh = is_full_results_fresh(f, now.date())
             if not corroborated and not global_fresh and not cov_fresh:
+                age_txt = (f"{(now.date() - f).days}d" if f else "sin fecha")
                 cov_note = (f"cobertura del torneo hasta {cov_until} (vieja)"
                             if cov_until else "el torneo no tiene cobertura reciente")
                 res.add("results_feed_stale_pre_match_unverified", m,
                         (f"fuente '{m.source}' publica estado sin evidencia de juego, "
                          f"los resultados {m.tour} solo llegan hasta "
-                         f"{f or 'ninguna fecha'} (< {now.date()}) y {cov_note}; sin "
-                         f"hora independiente que lo corrobore no se puede afirmar "
+                         f"{f or 'ninguna fecha'} ({age_txt}, fuera de la política de "
+                         f"{FULL_RESULTS_FRESH_MAX_AGE_DAYS}d) y {cov_note}; sin hora "
+                         f"independiente que lo corrobore no se puede afirmar "
                          f"prepartido"))
                 continue
-            if corroborated:
+            if global_fresh:
+                results_check = (f"full_frescos hasta {f} "
+                                 f"({(now.date() - f).days}d, dentro de política)")
+            elif corroborated:
                 results_check = "hora_independiente_corrobora"
-            elif global_fresh:
-                results_check = "full_frescos"
             else:
                 results_check = f"cobertura_outcomes_torneo hasta {cov_until}"
 
