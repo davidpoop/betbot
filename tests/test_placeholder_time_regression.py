@@ -182,9 +182,11 @@ def test_commence_time_already_past_excludes(cfg):
     assert "ya pasada" in list(res.details.values())[0]
 
 
-def test_absent_from_covered_tournament_is_a_conflict(cfg):
-    """Si el índice cubre el torneo pero el partido ya no aparece, no se asume
-    prepartido: se marca conflicto."""
+def test_absent_from_covered_tournament_is_not_a_conflict(cfg):
+    """AUSENCIA != CONTRADICCIÓN (corregido tras el caso real Jodar–Nakashima):
+    que el índice cubra el torneo pero no liste el partido puede ser snapshot
+    incompleto, ventana distinta o cobertura parcial. No se marca conflicto; la
+    corroboración queda registrada como ausente y deciden las demás puertas."""
     idx = _odds_index()
     from betbot.feeds.base import FeedMatch
     m = FeedMatch(date=NOW.date(), tour="WTA", tournament="tennis_wta_canadian_open",
@@ -194,7 +196,11 @@ def test_absent_from_covered_tournament_is_a_conflict(cfg):
                   trust_tier="schedule_only")
     res = gate([m], cfg, now=NOW, completed_idx={}, fresh_until=FRESH_OK,
                commence_idx=idx)
-    assert res.eligible == [] and res.counts()["conflicto_de_fuentes"] == 1
+    assert res.counts().get("conflicto_de_fuentes", 0) == 0
+    assert len(res.eligible) == 1
+    conf = res.confirmations[m.pair_key]
+    assert conf["commence_check"] == "no_corroborado"
+    assert conf["corroboration"] == "ausente_en_secundaria"
 
 
 def test_matching_commence_time_confirms(cfg):

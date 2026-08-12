@@ -46,6 +46,10 @@ class CommenceRecord:
     sport_key: str = ""
     fetched_at: str = ""
     players_raw: tuple = ()
+    # estado DECLARADO por la fuente secundaria, si lo publica ("completed",
+    # "live"...). Solo un estado explícito permite afirmar "ya no está por
+    # jugar"; la simple ausencia del partido en la lista nunca lo permite.
+    status: str = ""
 
 
 @dataclass
@@ -134,7 +138,8 @@ def build_index(cfg: dict, registry: set | None = None,
             rec = _record_from(ev.get("player1"), ev.get("player2"),
                                ev.get("start") or ev.get("commence_time"),
                                str(ev.get("event_id", "")), m["name"],
-                               str(ev.get("sport_key", "")), fetched, registry)
+                               str(ev.get("sport_key", "")), fetched, registry,
+                               status=_declared_status(ev))
             if rec:
                 _add(idx, rec)
                 n += 1
@@ -142,7 +147,8 @@ def build_index(cfg: dict, registry: set | None = None,
     return idx
 
 
-def _record_from(p1, p2, commence, event_id, source, sport_key, fetched, registry):
+def _record_from(p1, p2, commence, event_id, source, sport_key, fetched, registry,
+                 status=""):
     if not p1 or not p2:
         return None
     dt = _parse_iso(commence)
@@ -151,7 +157,17 @@ def _record_from(p1, p2, commence, event_id, source, sport_key, fetched, registr
     return CommenceRecord(pair=_canon_pair(str(p1), str(p2), registry), commence_utc=dt,
                           event_id=str(event_id or ""), source=source,
                           sport_key=str(sport_key or ""), fetched_at=str(fetched or ""),
-                          players_raw=(str(p1), str(p2)))
+                          players_raw=(str(p1), str(p2)), status=str(status or ""))
+
+
+def _declared_status(ev: dict) -> str:
+    """Estado EXPLÍCITO publicado por la fuente secundaria, si lo hay.
+    `completed: true` o un campo status/state con un valor conocido; cualquier
+    otra cosa (incluida su ausencia) devuelve "" y no afirma nada."""
+    if ev.get("completed") is True:
+        return "completed"
+    s = str(ev.get("status") or ev.get("state") or "").strip().lower()
+    return s if s in ("completed", "live", "in_play", "finished") else ""
 
 
 def _add(idx: CommenceIndex, rec: CommenceRecord) -> None:
@@ -164,32 +180,107 @@ def _add(idx: CommenceIndex, rec: CommenceRecord) -> None:
 # contraste
 # ---------------------------------------------------------------------------
 
-VERDICTS = ("sin_datos", "coincide", "conflicto_horario", "ya_comenzado", "ausente")
+VERDICTS = ("sin_datos", "coincide", "conflicto_horario", "ya_comenzado",
+            "no_corroborado")
+
+# Jerarquía de confianza: un espejo secundario JAMÁS anula silenciosamente a
+# una fuente superior. Solo se usa para reportar la evidencia de ambos lados
+# en un conflicto real; no cambia por sí sola ninguna exclusión.
+TRUST_RANK = {
+    "wta_official": 0,          # primera parte, estado + hora reales
+    "sportradar": 1,            # proveedor oficial con enum cerrado
+    "oddsapi": 2,               # proveedor directo (The Odds API /events)
+    "thesportsdb": 3,
+    "espn": 3,
+    "commence": 4,              # índices/espejos de commence-time
+    "github_te": 5,             # comunitaria
+}
+
+
+def trust_of(source: str) -> int:
+    s = str(source or "").lower()
+    for k, v in TRUST_RANK.items():
+        if k in s:
+            return v
+    return 4                                     # desconocida: nivel espejo
+
+
+# Un snapshot secundario viejo puede aportar información POSITIVA (una hora
+# concreta no caduca), pero su AUSENCIA no informa de nada: pasado este umbral
+# la falta del partido en el índice se degrada a `sin_datos`.
+ABSENCE_MAX_SNAPSHOT_AGE_H = 6.0
+
+
+def _snapshot_age_h(idx: CommenceIndex, now: datetime) -> float | None:
+    """Antigüedad del snapshot MÁS RECIENTE del índice (horas), o None."""
+    newest = None
+    for recs in idx.by_pair.values():
+        for r in recs:
+            if not r.fetched_at:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(r.fetched_at).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if newest is None or dt > newest:
+                newest = dt
+    if newest is None:
+        return None
+    return max(0.0, (now - newest).total_seconds() / 3600.0)
 
 
 def cross_check(pair: tuple, declared_utc: datetime | None, idx: CommenceIndex,
                 now: datetime, tolerance_minutes: float = 90.0,
-                tournament_hint: str = "") -> dict:
+                tournament_hint: str = "",
+                absence_max_age_h: float = ABSENCE_MAX_SNAPSHOT_AGE_H) -> dict:
     """Contrasta la hora declarada por el calendario con la independiente.
 
-    - `ya_comenzado`: la hora independiente ya pasó (manda sobre el calendario).
-    - `conflicto_horario`: difieren más que la tolerancia -> exclusión.
-    - `ausente`: el índice cubre el torneo pero no tiene el partido.
-    - `sin_datos`: no hay índice o no cubre ese torneo -> no se concluye nada.
+    Distingue CONTRADICCIÓN de AUSENCIA (la ausencia no es contradicción):
+
+    - `ya_comenzado`: la MISMA pareja aparece con hora ya pasada, o la fuente
+      declara explícitamente que ese evento está en juego/terminado. Es
+      evidencia positiva y manda sobre el calendario.
+    - `conflicto_horario`: la MISMA pareja aparece con una hora incompatible
+      (> tolerancia). Contradicción real -> exclusión.
+    - `no_corroborado`: el índice cubre el torneo pero NO lista este partido.
+      Puede ser snapshot antiguo, feed incompleto, ventana distinta o
+      cobertura parcial: NO se concluye nada en contra del partido.
+    - `sin_datos`: no hay índice, no cubre el torneo, o el snapshot es
+      demasiado viejo como para que su ausencia signifique algo.
     """
     if not idx.available:
         return {"verdict": "sin_datos", "detail": "sin índice independiente de horas"}
     recs = idx.get(pair)
     if not recs:
+        age_h = _snapshot_age_h(idx, now)
         if tournament_hint and idx.covers(tournament_hint):
-            return {"verdict": "ausente",
-                    "detail": ("el índice cubre este torneo pero no lista el partido "
-                               "en próximos/en juego")}
+            if age_h is not None and age_h > absence_max_age_h:
+                return {"verdict": "sin_datos", "snapshot_age_h": round(age_h, 1),
+                        "detail": (f"el índice cubre el torneo pero su snapshot tiene "
+                                   f"{age_h:.1f} h (> {absence_max_age_h} h): su "
+                                   f"ausencia no informa")}
+            return {"verdict": "no_corroborado",
+                    **({"snapshot_age_h": round(age_h, 1)} if age_h is not None else {}),
+                    "detail": ("el índice cubre este torneo pero no lista el partido; "
+                               "ausencia NO es contradicción (snapshot incompleto, "
+                               "ventana distinta o cobertura parcial)")}
         return {"verdict": "sin_datos", "detail": "el índice no cubre este torneo"}
     best = min(recs, key=lambda r: r.commence_utc)
     info = {"commence_utc": best.commence_utc.isoformat(), "event_id": best.event_id,
             "source": best.source, "sport_key": best.sport_key,
-            "fetched_at": best.fetched_at}
+            "fetched_at": best.fetched_at, "trust": trust_of(best.source)}
+    # la fuente declara EXPLÍCITAMENTE que ese evento ya no está por jugar:
+    # eso sí es información concluyente (a diferencia de la mera ausencia)
+    explicit = next((r for r in recs if str(getattr(r, "status", "")).lower()
+                     in ("completed", "live", "in_play", "finished")), None)
+    if explicit is not None:
+        return {"verdict": "ya_comenzado",
+                "detail": (f"la fuente independiente declara explícitamente el evento "
+                           f"{explicit.event_id or ''} como "
+                           f"'{explicit.status}' (no upcoming)"),
+                **info}
     if best.commence_utc <= now:
         return {"verdict": "ya_comenzado",
                 "detail": f"hora independiente {best.commence_utc.isoformat()} ya pasada",

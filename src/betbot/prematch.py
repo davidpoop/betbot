@@ -266,15 +266,27 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
             continue
 
         # ---- contraste con la hora independiente (The Odds API / espejos) ----
+        # AUSENCIA != CONTRADICCIÓN: que un espejo no liste el partido puede ser
+        # snapshot antiguo, feed incompleto o ventana distinta. Solo bloquean la
+        # contradicción real sobre la MISMA pareja (hora incompatible) y la
+        # declaración explícita de que el evento ya no está por jugar.
         if commence_idx is not None and xcheck is None:
-            from betbot.feeds.commence import cross_check
+            from betbot.feeds.commence import cross_check, trust_of
             xcheck = cross_check(m.pair_key[1:], start, commence_idx, now,
                                  tolerance_minutes=tol, tournament_hint=m.tournament)
             if xcheck["verdict"] == "ya_comenzado":
                 res.add("ya_comenzado", m, xcheck["detail"])
                 continue
-            if xcheck["verdict"] in ("conflicto_horario", "ausente"):
-                res.add("conflicto_de_fuentes", m, xcheck["detail"])
+            if xcheck["verdict"] == "conflicto_horario":
+                # conflicto REAL: se conserva la evidencia de AMBAS fuentes
+                # (hora, snapshot y nivel de confianza) para poder resolverlo
+                res.add("conflicto_de_fuentes", m,
+                        (f"{xcheck['detail']} · primaria '{m.source}' "
+                         f"[trust {trust_of(m.source)}, observada "
+                         f"{m.source_updated_at or '?'}] vs secundaria "
+                         f"'{xcheck.get('source', '?')}' [trust "
+                         f"{xcheck.get('trust', '?')}, snapshot "
+                         f"{xcheck.get('fetched_at') or '?'}]"))
                 continue
 
         if start <= now + margin:
@@ -338,6 +350,14 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
             "status_age_h": round(age, 2) if age is not None else None,
             "time_precision": time_precision, "time_source": time_source,
             "trust_tier": m.trust_tier, "results_check": results_check,
+            # trazabilidad del contraste: qué aportó la primaria y qué la
+            # secundaria (corroboración presente, ausente o no exigida)
+            "schedule_check": ("primary_exact_future" if time_precision == "exact"
+                               else f"primary_{time_precision}"),
+            "corroboration": {"coincide": "corroborado",
+                              "no_corroborado": "ausente_en_secundaria",
+                              "sin_datos": "no_disponible"}.get(
+                (xcheck or {}).get("verdict", "sin_datos"), "no_disponible"),
             "commence_check": (xcheck or {}).get("verdict", "sin_datos"),
             "commence_utc": (xcheck or {}).get("commence_utc"),
             "commence_event_id": (xcheck or {}).get("event_id"),
