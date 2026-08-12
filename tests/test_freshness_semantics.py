@@ -58,7 +58,7 @@ def _cfg(tmp_path):
 
 
 def _add_outcome(cfg, monkeypatch, commence="2026-08-09T19:10:00Z",
-                 home="Arthur Fils", away="Casper Ruud", eid="ev1"):
+                 home="Arthur Fils", away="Casper Ruud", eid="ev1", today=None):
     ev = {"id": eid, "sport_key": "tennis_atp_canadian_open",
           "sport_title": "ATP Canadian Open", "commence_time": commence,
           "completed": True, "home_team": home, "away_team": away,
@@ -71,7 +71,7 @@ def _add_outcome(cfg, monkeypatch, commence="2026-08-09T19:10:00Z",
                            "title": "ATP Canadian Open", "active": True}]
                          if "/sports/?" in url else [ev]))
     monkeypatch.setattr("betbot.feeds.oddsapi_scores.cache.is_cached", lambda u, t: False)
-    return run_sync(cfg, sources=[src], today=TODAY, refresh=False)
+    return run_sync(cfg, sources=[src], today=today or TODAY, refresh=False)
 
 
 def _fm(tour, tournament, p1="Fils A.", p2="Ruud C."):
@@ -249,7 +249,12 @@ def test_outcome_blocks_match_from_reappearing_as_prematch(tmp_path, monkeypatch
 
 def test_matrix_shows_two_level_results(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    _add_outcome(cfg, monkeypatch)
+    # feeds_matrix usa el `today` REAL (UTC): el outcome debe ser de ayer real
+    # para que la cobertura cuente como FRESH independientemente del reloj
+    real_today = datetime.now(timezone.utc).date()
+    real_yesterday = real_today - timedelta(days=1)
+    _add_outcome(cfg, monkeypatch, commence=f"{real_yesterday}T19:10:00Z",
+                 today=real_today)
     from betbot.feeds.base import SourceStatus
     from betbot.feeds.manage import feeds_matrix
 
@@ -275,7 +280,8 @@ def test_matrix_shows_two_level_results(tmp_path, monkeypatch):
                         lambda cfg, allow_backfill=False: [])
     txt = feeds_matrix(cfg, hours=48)
     assert "full canonical: 2026-08-03" in txt
-    assert "recent outcome state:" in txt and "Canadian Open: 2026-08-09" in txt
+    assert "recent outcome state:" in txt
+    assert f"Canadian Open: {real_yesterday}" in txt
     assert "production freshness: PARTIAL" in txt
     assert "source recent: oddsapi_scores (outcome_only)" in txt
     assert "source full: github/TML" in txt

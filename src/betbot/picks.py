@@ -209,10 +209,12 @@ def _pick_block(i: int, o: Opportunity) -> list[str]:
 
 
 def _age_days(ref: str, iso: str | None) -> int | None:
+    """Edad en días, NUNCA negativa: si el dato es 'del futuro' respecto a la
+    referencia (cruce de medianoche UTC/local), la edad honesta es 0."""
     if not iso:
         return None
     try:
-        return (date.fromisoformat(str(ref)) - date.fromisoformat(str(iso))).days
+        return max(0, (date.fromisoformat(str(ref)) - date.fromisoformat(str(iso))).days)
     except ValueError:
         return 0
 
@@ -294,9 +296,24 @@ def degraded_banner(summary: dict) -> str | None:
         if not is_analyzed:
             estado = ("cobertura reciente PARCIAL" if prod == "PARTIAL"
                       else "sin cobertura reciente")
-            notes.append(f"{t}: {estado} · histórico completo hasta {iso} ({age}d) — "
-                         f"no hay picks {t} en esta jornada, así que no afecta a las "
-                         f"probabilidades mostradas")
+            n_blocked = int(an.get("blocked") or 0)
+            n_found = int(an.get("found_in_window") or 0)
+            if n_blocked and not an.get("n_matches"):
+                # CIRCULARIDAD PROHIBIDA: si los partidos del tour fueron
+                # bloqueados por frescura/confirmación, no se puede afirmar
+                # "no hay picks" como prueba de que el problema no afecta
+                lines.append(f"⚠ {t}: {n_blocked} partido(s) en ventana NO "
+                             f"analizados por frescura/confirmación (histórico "
+                             f"completo hasta {iso}, {age}d; {estado}). Ver "
+                             f"`--verbose` para el motivo de cada exclusión.")
+            elif n_found == 0:
+                notes.append(f"{t}: {estado} · histórico completo hasta {iso} "
+                             f"({age}d) — sin partidos {t} en la ventana, no "
+                             f"afecta a las probabilidades mostradas")
+            else:
+                notes.append(f"{t}: {estado} · histórico completo hasta {iso} "
+                             f"({age}d) — los partidos {t} analizados no "
+                             f"produjeron picks")
             continue
         if prod == "PARTIAL" and covered:
             lines += _partial_block(t, iso, age, c, covered, summary)

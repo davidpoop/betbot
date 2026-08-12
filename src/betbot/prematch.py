@@ -134,10 +134,47 @@ def results_freshness(cfg: dict) -> dict:
         return {}
 
 
+def tournament_coverage(cfg: dict) -> dict:
+    """{tour: {evento_canónico: date}} — hasta cuándo hay cobertura reciente
+    demostrada POR TORNEO (recent outcomes + fuentes parciales full). Es la
+    misma cobertura que reporta capability_freshness; la puerta la usa para
+    no bloquear por frescura GLOBAL un torneo cuyo estado sí está al día."""
+    try:
+        from betbot.sync import freshness_detail
+        det = freshness_detail(cfg)
+    except Exception:  # noqa: BLE001
+        return {}
+    return {t: {k: c["until"] for k, c in (d.get("active_coverage") or {}).items()}
+            for t, d in det.items()}
+
+
+def _coverage_until(coverage: dict | None, tour: str, tournament: str):
+    if not coverage or not tournament:
+        return None
+    cov = coverage.get(tour) or {}
+    if not cov:
+        return None
+    try:
+        from betbot.tournaments import canonical_event
+        key = canonical_event(tour, str(tournament))
+    except Exception:  # noqa: BLE001
+        return None                       # identidad de torneo no resoluble: sin rescate
+    u = cov.get(key)
+    if u is None:
+        return None
+    return u if isinstance(u, date) else date.fromisoformat(str(u))
+
+
+# la cobertura de un torneo cuenta como FRESCA con esta antigüedad máxima —
+# el MISMO umbral que usa capability_freshness para declarar FRESH (2 días)
+COVERAGE_FRESH_MAX_AGE_DAYS = 2
+
+
 def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
          now: datetime | None = None, tours: list[str] | None = None,
          completed_idx: dict | None = None, registry: set | None = None,
-         commence_idx=None, fresh_until: dict | None = None) -> GateResult:
+         commence_idx=None, fresh_until: dict | None = None,
+         coverage: dict | None = None) -> GateResult:
     """Clasifica los partidos del calendario en elegibles + excluidos con motivo.
 
     Orden deliberado: primero lo que descalifica de forma absoluta (no es main
@@ -155,6 +192,8 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
         completed_idx = completed_index(cfg, around=now.date())
     if fresh_until is None:
         fresh_until = results_freshness(cfg)
+    if coverage is None:
+        coverage = tournament_coverage(cfg)
     # SEGUNDA BARRERA contra horas placeholder (bug real: "Inicio confirmado
     # 03:59Z"). time_precision lo marca cada adaptador, pero su valor por
     # defecto es "exact": un adaptador que olvide marcarlo dejaría pasar el
@@ -251,6 +290,7 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
             continue
 
         # ---- una fuente sin evidencia de juego exige resultados frescos ----
+        results_check = "full_frescos"
         if m.trust_tier != "live_verified":
             f = fresh_until.get(m.tour)
             # la corroboración debe ser INDEPENDIENTE: si el calendario ES de la
@@ -260,13 +300,30 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
                                                 (xcheck or {}).get("source", ""))
             corroborated = bool(xcheck and xcheck["verdict"] == "coincide"
                                 and not same_family)
-            if not corroborated and (f is None or f < now.date()):
+            # cobertura reciente DEL TORNEO (recent outcomes): si el estado de
+            # este torneo está al día, la frescura GLOBAL stale no puede ser el
+            # único motivo de bloqueo — el completed_index ya incluye esos
+            # outcomes, así que "sigue por jugar" SÍ es verificable aquí
+            cov_until = _coverage_until(coverage, m.tour, m.tournament)
+            cov_fresh = (cov_until is not None
+                         and (now.date() - cov_until).days <= COVERAGE_FRESH_MAX_AGE_DAYS)
+            global_fresh = f is not None and f >= now.date()
+            if not corroborated and not global_fresh and not cov_fresh:
+                cov_note = (f"cobertura del torneo hasta {cov_until} (vieja)"
+                            if cov_until else "el torneo no tiene cobertura reciente")
                 res.add("results_feed_stale_pre_match_unverified", m,
-                        (f"fuente '{m.source}' publica estado sin evidencia de juego y "
+                        (f"fuente '{m.source}' publica estado sin evidencia de juego, "
                          f"los resultados {m.tour} solo llegan hasta "
-                         f"{f or 'ninguna fecha'} (< {now.date()}); sin hora "
-                         f"independiente que lo corrobore no se puede afirmar prepartido"))
+                         f"{f or 'ninguna fecha'} (< {now.date()}) y {cov_note}; sin "
+                         f"hora independiente que lo corrobore no se puede afirmar "
+                         f"prepartido"))
                 continue
+            if corroborated:
+                results_check = "hora_independiente_corrobora"
+            elif global_fresh:
+                results_check = "full_frescos"
+            else:
+                results_check = f"cobertura_outcomes_torneo hasta {cov_until}"
 
         # cinturón final: NUNCA confirmar una hora que siga pareciendo placeholder
         final_ph, final_why = is_placeholder_time(start, 1)
@@ -280,7 +337,7 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
             "start_tz": m.start_tz, "source_updated_at": m.source_updated_at,
             "status_age_h": round(age, 2) if age is not None else None,
             "time_precision": time_precision, "time_source": time_source,
-            "trust_tier": m.trust_tier,
+            "trust_tier": m.trust_tier, "results_check": results_check,
             "commence_check": (xcheck or {}).get("verdict", "sin_datos"),
             "commence_utc": (xcheck or {}).get("commence_utc"),
             "commence_event_id": (xcheck or {}).get("event_id"),

@@ -162,8 +162,14 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
                 statuses.append(SourceStatus(name="commence", ok=False, error=s))
         except Exception as exc:  # noqa: BLE001 - el contraste nunca detiene el escaneo
             statuses.append(SourceStatus(name="commence", ok=False, error=str(exc)))
+    # la puerta recibe la MISMA cobertura por torneo que reporta la frescura
+    # por capacidad: un torneo con outcomes al día no se bloquea por la
+    # frescura global; el resto de puertas siguen intactas
+    gate_coverage = {t: {k: c["until"] for k, c in
+                         ((results_coverage.get(t) or {}).get("active_coverage") or {}).items()}
+                     for t in results_coverage} or None
     gres = gate(found, cfg, window_hours=hours, now=now, tours=tours, registry=registry,
-                commence_idx=commence_idx)
+                commence_idx=commence_idx, coverage=gate_coverage)
     eligible = gres.eligible
     gate_counts = gres.counts()
     excluded = {
@@ -333,7 +339,7 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
     if len(out):
         n_stale = int(out["reasons"].str.contains("cuota_caducada", na=False).sum())
     summary = {
-        "date": str(date.today()),
+        "date": str(datetime.now(timezone.utc).date()),   # referencia UTC única
         "window_hours": hours,
         "found": len(found), "eligible": len(eligible),
         "excluded": excluded,
@@ -349,7 +355,7 @@ def run_scan(cfg: dict, hours: int = 48, tours: list[str] | None = None,
         "states": state_counts,
         "surface_sources": surface_sources,
         "rankings_status": rankings_status,
-        "analyzed_coverage": _analyzed_coverage(eligible, results_coverage),
+        "analyzed_coverage": _analyzed_coverage(eligible, results_coverage, found=found),
         "results_freshness": results_freshness,
         "results_coverage": results_coverage,
         "sync": sync_report,
@@ -405,20 +411,33 @@ def _classify(s: SourceStatus) -> str:
     return classify_status({"ok": s.ok, "error": s.error, "n": s.n_items})
 
 
-def _analyzed_coverage(eligible: list, coverage: dict) -> dict:
+def _analyzed_coverage(eligible: list, coverage: dict,
+                       found: list | None = None) -> dict:
     """Cobertura reciente de los torneos REALMENTE analizados en esta jornada.
 
     El banner necesita contexto: un ATP con retraso global solo degrada las
     picks de los torneos ATP SIN cobertura reciente, y no dice nada sobre las
-    probabilidades WTA de la misma jornada."""
+    probabilidades WTA de la misma jornada.
+
+    `found` (pre-puerta) permite distinguir tres situaciones que el banner NO
+    puede confundir (el "no hay picks ATP" sería circular si ATP fue bloqueado
+    precisamente por frescura):
+      found_in_window=0                  -> no_events_in_window
+      found>0 y n_matches=0              -> events_present_but_blocked
+      n_matches>0                        -> events_analyzed"""
     from betbot.tournaments import canonical_event
     out: dict = {}
+    for m in (found or []):
+        t = str(m.tour)
+        e = out.setdefault(t, {"n_matches": 0, "found_in_window": 0, "blocked": 0,
+                               "covered": [], "uncovered": [], "_seen": set()})
+        e["found_in_window"] += 1
     for m in eligible:
         t = str(m.tour)
         cov = ((coverage.get(t) or {}).get("outcome_state") or {}).get("by_tournament") or {}
         key = canonical_event(t, str(m.tournament))
-        entry = out.setdefault(t, {"n_matches": 0, "covered": [], "uncovered": [],
-                                   "_seen": set()})
+        entry = out.setdefault(t, {"n_matches": 0, "found_in_window": 0, "blocked": 0,
+                                   "covered": [], "uncovered": [], "_seen": set()})
         entry["n_matches"] += 1
         if key in entry["_seen"]:
             continue
@@ -430,6 +449,7 @@ def _analyzed_coverage(eligible: list, coverage: dict) -> dict:
             entry["uncovered"].append(str(m.tournament))
     for entry in out.values():
         entry.pop("_seen", None)
+        entry["blocked"] = max(0, entry["found_in_window"] - entry["n_matches"])
     return out
 
 
@@ -438,7 +458,7 @@ def _rankings_status(cfg: dict) -> dict:
     from betbot.config import resolve_path
     from betbot.ingest.rankings import load_rankings
     out = {}
-    today = date.today()
+    today = datetime.now(timezone.utc).date()   # misma referencia UTC
     max_age = int(cfg.get("rankings", {}).get("max_age_days", 45))
     for tour in ("ATP", "WTA"):
         try:
@@ -477,7 +497,7 @@ def _fail_closed_result(cfg: dict, hours: int, statuses: list[SourceStatus],
     """Sin calendario autoritativo operativo: cero señales, con motivo explícito."""
     from betbot.prematch import FAIL_CLOSED_MSG
     summary = {
-        "date": str(date.today()), "window_hours": hours,
+        "date": str(datetime.now(timezone.utc).date()), "window_hours": hours,
         "fail_closed": True, "fail_closed_message": FAIL_CLOSED_MSG,
         "found": 0, "eligible": 0, "calendar_confirmed": 0, "calendar_sources_ok": 0,
         "excluded": {"doubles": 0, "qualifying": 0, "challenger": 0, "itf": 0,
