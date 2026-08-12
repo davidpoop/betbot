@@ -68,7 +68,7 @@ def _ls061(**kw):
     return base
 
 
-def _odds_index():
+def _odds_index(fetched_at="2026-08-05T02:33:11Z"):
     """Índice REAL de horas independientes (valores verificados el 2026-08-05
     en dos espejos de The Odds API que coinciden al segundo)."""
     idx = CommenceIndex()
@@ -81,7 +81,7 @@ def _odds_index():
                              commence_utc=datetime.fromisoformat(hora.replace("Z", "+00:00")),
                              event_id=eid, source="odds_api_mirror:alienorsutinn",
                              sport_key="tennis_wta_canadian_open",
-                             fetched_at="2026-08-05T02:33:11Z")
+                             fetched_at=fetched_at)
         idx.by_pair.setdefault(rec.pair, []).append(rec)
         idx.covered_tours.add("tennis_wta_canadian_open")
     return idx
@@ -169,17 +169,41 @@ def test_conflict_excludes_even_with_an_exact_looking_time(cfg):
 
 
 def test_commence_time_already_past_excludes(cfg):
-    """Si la hora independiente ya pasó, manda sobre el calendario."""
+    """Si la hora independiente RECIENTE ya pasó, manda sobre el calendario.
+
+    (Precisión posterior: una hora PROGRAMADA caduca — el snapshot debe ser
+    reciente para poder concluir; con snapshot viejo protege el cinturón de
+    hora provisional, ver el test siguiente.)"""
     later = datetime(2026, 8, 5, 19, 0, tzinfo=timezone.utc)   # tras las 18:00Z
     out, _, _ = WtaOfficialCalendar.parse_matches(
         [_ls052(MatchTimeStamp="2026-08-06T04:00:00Z")], later.isoformat(),
         later - timedelta(days=1), later + timedelta(hours=48))
     m = out[0]
     m.time_precision, m.time_note = "exact", ""     # estado recién observado
+    idx = _odds_index(fetched_at="2026-08-05T18:30:00Z")       # snapshot reciente
     res = gate([m], cfg, now=later, completed_idx={}, fresh_until=FRESH_OK,
-               commence_idx=_odds_index())
-    assert res.eligible == [] and res.counts()["ya_comenzado"] == 1
-    assert "ya pasada" in list(res.details.values())[0]
+               commence_idx=idx)
+    assert res.eligible == []
+    # con hora primaria declarada y discrepancia material, la exclusión precisa
+    # es el conflicto entre fuentes (ambas horas quedan en el detalle)
+    assert res.counts()["conflicto_de_fuentes"] == 1
+    assert "18:00" in list(res.details.values())[0]
+
+
+def test_real_placeholder_case_still_blocked_with_stale_mirror(cfg):
+    """El caso REAL Jović–Linette con el espejo viejo (16 h): la hora
+    programada caducada ya no bloquea por sí sola, pero el partido SIGUE
+    excluido porque 03:59/04:00 es una hora provisional de fin de día local.
+    La protección crítica no depende del espejo."""
+    later = datetime(2026, 8, 5, 19, 0, tzinfo=timezone.utc)
+    out, _, _ = WtaOfficialCalendar.parse_matches(
+        [_ls052(MatchTimeStamp="2026-08-06T03:59:00Z")], later.isoformat(),
+        later - timedelta(days=1), later + timedelta(hours=48))
+    m = out[0]
+    res = gate([m], cfg, now=later, completed_idx={}, fresh_until=FRESH_OK,
+               commence_idx=_odds_index())               # espejo de 16 h
+    assert res.eligible == []
+    assert res.counts()["hora_provisional"] == 1
 
 
 def test_absent_from_covered_tournament_is_not_a_conflict(cfg):

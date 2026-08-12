@@ -356,6 +356,7 @@ def gate(matches: list[FeedMatch], cfg: dict, *, window_hours: int = 48,
                                else f"primary_{time_precision}"),
             "corroboration": {"coincide": "corroborado",
                               "no_corroborado": "ausente_en_secundaria",
+                              "secondary_stale_schedule": "secundaria_caducada",
                               "sin_datos": "no_disponible"}.get(
                 (xcheck or {}).get("verdict", "sin_datos"), "no_disponible"),
             "commence_check": (xcheck or {}).get("verdict", "sin_datos"),

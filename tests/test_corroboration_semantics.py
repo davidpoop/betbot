@@ -62,12 +62,14 @@ def _idx(pairs, fetched="2026-08-12T11:30:00Z", sport="tennis_atp_canadian_open"
 
 
 def _match(p1="Jodar R.", p2="Nakashima B.", start=FUTURE,
-           tournament="Canadian Open", source="oddsapi", tour="ATP"):
+           tournament="Canadian Open", source="oddsapi", tour="ATP",
+           observed=None):
     return FeedMatch(date=start.date(), tour=tour, tournament=tournament,
                      player1=p1, player2=p2, level="main", is_doubles=False,
                      is_qualifying=False, round="SF", best_of=3, surface="Hard",
                      source=source, event_id="primary:1", scheduled_at_utc=start,
-                     status="scheduled", source_updated_at=NOW.isoformat(),
+                     status="scheduled",
+                     source_updated_at=(observed or NOW).isoformat(),
                      start_tz="UTC", authoritative=True, trust_tier="schedule_only")
 
 
@@ -200,6 +202,113 @@ def test_F_wta_authoritative_vs_secondary_keeps_both_evidences(cfg):
 
 # --------------------------------------------------- jerarquía y unidad
 
+# ------------------------- HORA PROGRAMADA vs EVIDENCIA DE JUEGO -----------
+# Una scheduled_start antigua puede quedar obsoleta (lluvia, orden de juego,
+# partido anterior largo, cambio de pista, reprogramación). Un estado
+# explícito de juego, no.
+
+PAST_19H = datetime(2026, 8, 12, 19, 0, tzinfo=timezone.utc)   # ya pasada a las 20:00+
+LATER = datetime(2026, 8, 12, 21, 0, tzinfo=timezone.utc)      # "ahora" tras las 19:00
+STALE_11H = (LATER - timedelta(hours=11)).isoformat()          # espejo de 11 h
+FRESH_30M = (LATER - timedelta(minutes=30)).isoformat()        # espejo reciente
+
+
+def test_1_recent_primary_future_vs_stale_past_schedule_is_not_started(cfg):
+    """primary reciente 22:00 scheduled + secondary 11 h viejo 19:00 scheduled,
+    a las 21:00 => NO `ya_comenzado`: manda la primaria y se marca la
+    secundaria como caducada."""
+    idx = _idx([("jodar_r", "nakashima_b", PAST_19H, "")], fetched=STALE_11H)
+    m = _match(start=FUTURE, observed=LATER)                   # 22:00, futura
+    res = gate([m], cfg, now=LATER, completed_idx={},
+               registry={"jodar_r", "nakashima_b"}, fresh_until=FRESH_FULL,
+               commence_idx=idx, coverage={})
+    assert res.counts().get("ya_comenzado", 0) == 0
+    assert res.counts().get("conflicto_de_fuentes", 0) == 0
+    assert len(res.eligible) == 1
+    conf = res.confirmations[m.pair_key]
+    assert conf["commence_check"] == "secondary_stale_schedule"
+    assert conf["corroboration"] == "secundaria_caducada"
+
+
+def test_2_recent_primary_vs_recent_past_schedule_is_conflict(cfg):
+    """Si AMBAS son suficientemente recientes y muestran 19:00 vs 22:00, la
+    discrepancia sigue siendo un conflicto real (tolerancia 90 min)."""
+    idx = _idx([("jodar_r", "nakashima_b", PAST_19H, "")], fetched=FRESH_30M)
+    m = _match(start=FUTURE, observed=LATER)
+    res = gate([m], cfg, now=LATER, completed_idx={},
+               registry={"jodar_r", "nakashima_b"}, fresh_until=FRESH_FULL,
+               commence_idx=idx, coverage={})
+    assert res.eligible == []
+    assert res.counts()["conflicto_de_fuentes"] == 1
+    d = res.details[m.pair_key]
+    assert "22:00" in d and "19:00" in d and "180 min" in d
+
+
+@pytest.mark.parametrize("status,label", [("live", "live"), ("in_play", "in_play")])
+def test_3_stale_secondary_with_explicit_live_blocks(cfg, status, label):
+    """primary futuro + secondary VIEJO con status=live => `ya_comenzado`:
+    la evidencia de juego explícita no caduca."""
+    idx = _idx([("jodar_r", "nakashima_b", PAST_19H, status)], fetched=STALE_11H)
+    m = _match(start=FUTURE, observed=LATER)
+    res = gate([m], cfg, now=LATER, completed_idx={},
+               registry={"jodar_r", "nakashima_b"}, fresh_until=FRESH_FULL,
+               commence_idx=idx, coverage={})
+    assert res.eligible == [] and res.counts()["ya_comenzado"] == 1
+    d = res.details[m.pair_key]
+    assert label in d and "no caduca" in d
+
+
+def test_4_stale_secondary_with_explicit_completed_blocks(cfg):
+    """primary futuro + secondary VIEJO con status=completed => bloquea."""
+    idx = _idx([("jodar_r", "nakashima_b", PAST_19H, "completed")], fetched=STALE_11H)
+    m = _match(start=FUTURE, observed=LATER)
+    res = gate([m], cfg, now=LATER, completed_idx={},
+               registry={"jodar_r", "nakashima_b"}, fresh_until=FRESH_FULL,
+               commence_idx=idx, coverage={})
+    assert res.eligible == [] and res.counts()["ya_comenzado"] == 1
+    assert "completed" in res.details[m.pair_key]
+
+
+def test_5_stale_past_schedule_alone_is_never_strong_evidence(cfg):
+    """Sin primaria suficiente (estado de calendario caducado), una hora
+    programada vieja NO se usa como evidencia de juego: el partido cae por las
+    OTRAS reglas, jamás etiquetado falsamente como `ya_comenzado`."""
+    idx = _idx([("jodar_r", "nakashima_b", PAST_19H, "")], fetched=STALE_11H)
+    m = _match(start=FUTURE)
+    m.source_updated_at = (NOW - timedelta(hours=30)).isoformat()   # estado viejo
+    res = gate([m], cfg, now=LATER, completed_idx={},
+               registry={"jodar_r", "nakashima_b"}, fresh_until=FRESH_FULL,
+               commence_idx=idx, coverage={})
+    assert res.eligible == []
+    assert res.counts().get("ya_comenzado", 0) == 0
+    assert res.counts()["estado_calendario_caducado"] == 1          # otra regla
+
+
+def test_unknown_snapshot_age_is_treated_as_recent(cfg):
+    """Sin marca de snapshot no se puede PROBAR que esté caducada: se trata
+    como reciente (no se relaja la protección por falta de metadatos)."""
+    idx = _idx([("jodar_r", "nakashima_b", PAST_19H, "")], fetched="")
+    m = _match(start=FUTURE, observed=LATER)
+    res = gate([m], cfg, now=LATER, completed_idx={},
+               registry={"jodar_r", "nakashima_b"}, fresh_until=FRESH_FULL,
+               commence_idx=idx, coverage={})
+    assert res.eligible == [] and res.counts()["conflicto_de_fuentes"] == 1
+
+
+def test_agreeing_recent_past_time_still_means_started(cfg):
+    """Dentro de la tolerancia (las fuentes coinciden) y con la hora ya pasada,
+    `ya_comenzado` sigue siendo la conclusión correcta."""
+    agreed = LATER - timedelta(minutes=30)
+    idx = _idx([("jodar_r", "nakashima_b", agreed, "")], fetched=FRESH_30M)
+    m = _match(start=agreed + timedelta(minutes=20), observed=LATER)  # dentro de tolerancia
+    res = gate([m], cfg, now=LATER, completed_idx={},
+               registry={"jodar_r", "nakashima_b"}, fresh_until=FRESH_FULL,
+               commence_idx=idx, coverage={})
+    assert res.eligible == [] and res.counts()["ya_comenzado"] == 1
+    d = res.details[m.pair_key]
+    assert "ya pasada" in d or "ya pasado" in d
+
+
 def test_trust_hierarchy_order():
     assert (trust_of("wta_official") < trust_of("sportradar")
             < trust_of("oddsapi") < trust_of("thesportsdb")
@@ -222,9 +331,11 @@ def test_cross_check_verdicts_unit():
     assert cross_check(("a_x", "b_y"), FUTURE, CommenceIndex(), NOW)["verdict"] == "sin_datos"
 
 
-def test_stale_snapshot_still_provides_positive_information(cfg):
-    """Un snapshot viejo no puede VETAR por ausencia, pero su información
-    positiva (una hora concreta ya pasada) sigue valiendo."""
+def test_stale_snapshot_schedule_does_not_prove_play(cfg):
+    """CORRECCIÓN: una HORA PROGRAMADA sí caduca. Un snapshot viejo cuya única
+    evidencia es scheduled_start < now NO puede producir `ya_comenzado`: en
+    tenis el orden de juego se mueve por lluvia, partido anterior largo o
+    reprogramación. Solo la evidencia de juego EXPLÍCITA no caduca."""
     old = (NOW - timedelta(hours=ABSENCE_MAX_SNAPSHOT_AGE_H + 5)).isoformat()
     past = NOW - timedelta(hours=2)
     idx = _idx([("jodar_r", "nakashima_b", past, "")], fetched=old)
@@ -232,4 +343,8 @@ def test_stale_snapshot_still_provides_positive_information(cfg):
     res = gate([m], cfg, now=NOW, completed_idx={},
                registry={"jodar_r", "nakashima_b"}, fresh_until=FRESH_FULL,
                commence_idx=idx, coverage={})
-    assert res.eligible == [] and res.counts()["ya_comenzado"] == 1
+    assert res.counts().get("ya_comenzado", 0) == 0
+    assert len(res.eligible) == 1
+    conf = res.confirmations[m.pair_key]
+    assert conf["commence_check"] == "secondary_stale_schedule"
+    assert conf["corroboration"] == "secundaria_caducada"

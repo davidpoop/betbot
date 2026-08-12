@@ -181,7 +181,7 @@ def _add(idx: CommenceIndex, rec: CommenceRecord) -> None:
 # ---------------------------------------------------------------------------
 
 VERDICTS = ("sin_datos", "coincide", "conflicto_horario", "ya_comenzado",
-            "no_corroborado")
+            "no_corroborado", "secondary_stale_schedule")
 
 # Jerarquía de confianza: un espejo secundario JAMÁS anula silenciosamente a
 # una fuente superior. Solo se usa para reportar la evidencia de ambos lados
@@ -205,45 +205,57 @@ def trust_of(source: str) -> int:
     return 4                                     # desconocida: nivel espejo
 
 
-# Un snapshot secundario viejo puede aportar información POSITIVA (una hora
-# concreta no caduca), pero su AUSENCIA no informa de nada: pasado este umbral
-# la falta del partido en el índice se degrada a `sin_datos`.
+# Un snapshot secundario viejo no informa por AUSENCIA: pasado este umbral la
+# falta del partido en el índice se degrada a `sin_datos`.
 ABSENCE_MAX_SNAPSHOT_AGE_H = 6.0
+
+# Una HORA PROGRAMADA sí caduca. En tenis el orden de juego se mueve por
+# lluvia, partido anterior largo, cambio de pista o reprogramación, así que un
+# `scheduled_start` observado hace horas puede estar obsoleto: por sí solo NO
+# puede producir `ya_comenzado` ni un conflicto. Distinto de la EVIDENCIA DE
+# JUEGO EXPLÍCITA (status live/in_play/completed/finished o marcador real),
+# que no caduca y sigue bloqueando por vieja que sea la observación.
+SCHEDULE_MAX_SNAPSHOT_AGE_H = 6.0
+
+
+def _age_h(fetched_at: str, now: datetime) -> float | None:
+    """Antigüedad (horas) de una marca ISO, o None si no se puede determinar
+    (sin marca no se puede PROBAR que esté caducada: se trata como reciente)."""
+    if not fetched_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(fetched_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - dt).total_seconds() / 3600.0)
 
 
 def _snapshot_age_h(idx: CommenceIndex, now: datetime) -> float | None:
     """Antigüedad del snapshot MÁS RECIENTE del índice (horas), o None."""
-    newest = None
-    for recs in idx.by_pair.values():
-        for r in recs:
-            if not r.fetched_at:
-                continue
-            try:
-                dt = datetime.fromisoformat(str(r.fetched_at).replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            if newest is None or dt > newest:
-                newest = dt
-    if newest is None:
-        return None
-    return max(0.0, (now - newest).total_seconds() / 3600.0)
+    ages = [a for recs in idx.by_pair.values() for r in recs
+            if (a := _age_h(r.fetched_at, now)) is not None]
+    return min(ages) if ages else None
 
 
 def cross_check(pair: tuple, declared_utc: datetime | None, idx: CommenceIndex,
                 now: datetime, tolerance_minutes: float = 90.0,
                 tournament_hint: str = "",
-                absence_max_age_h: float = ABSENCE_MAX_SNAPSHOT_AGE_H) -> dict:
+                absence_max_age_h: float = ABSENCE_MAX_SNAPSHOT_AGE_H,
+                schedule_max_age_h: float = SCHEDULE_MAX_SNAPSHOT_AGE_H) -> dict:
     """Contrasta la hora declarada por el calendario con la independiente.
 
-    Distingue CONTRADICCIÓN de AUSENCIA (la ausencia no es contradicción):
+    Distingue CONTRADICCIÓN de AUSENCIA (la ausencia no es contradicción) y
+    EVIDENCIA DE JUEGO de HORA PROGRAMADA (la hora programada caduca):
 
-    - `ya_comenzado`: la MISMA pareja aparece con hora ya pasada, o la fuente
-      declara explícitamente que ese evento está en juego/terminado. Es
-      evidencia positiva y manda sobre el calendario.
-    - `conflicto_horario`: la MISMA pareja aparece con una hora incompatible
-      (> tolerancia). Contradicción real -> exclusión.
+    - `ya_comenzado`: la fuente declara explícitamente el evento en juego o
+      terminado (evidencia de juego: NO caduca), o su hora RECIENTE ya pasó.
+    - `secondary_stale_schedule`: la única evidencia de la secundaria es una
+      hora programada observada hace demasiado (pudo reprogramarse por lluvia
+      u orden de juego) -> no bloquea ni contradice; manda la primaria.
+    - `conflicto_horario`: la MISMA pareja con hora incompatible
+      (> tolerancia) y snapshot reciente. Contradicción real -> exclusión.
     - `no_corroborado`: el índice cubre el torneo pero NO lista este partido.
       Puede ser snapshot antiguo, feed incompleto, ventana distinta o
       cobertura parcial: NO se concluye nada en contra del partido.
@@ -271,20 +283,34 @@ def cross_check(pair: tuple, declared_utc: datetime | None, idx: CommenceIndex,
     info = {"commence_utc": best.commence_utc.isoformat(), "event_id": best.event_id,
             "source": best.source, "sport_key": best.sport_key,
             "fetched_at": best.fetched_at, "trust": trust_of(best.source)}
-    # la fuente declara EXPLÍCITAMENTE que ese evento ya no está por jugar:
-    # eso sí es información concluyente (a diferencia de la mera ausencia)
+
+    # (A) EVIDENCIA DE JUEGO EXPLÍCITA: la fuente declara el evento en juego o
+    # terminado. NO caduca: bloquea por vieja que sea la observación.
     explicit = next((r for r in recs if str(getattr(r, "status", "")).lower()
                      in ("completed", "live", "in_play", "finished")), None)
     if explicit is not None:
+        age = _age_h(explicit.fetched_at, now)
         return {"verdict": "ya_comenzado",
                 "detail": (f"la fuente independiente declara explícitamente el evento "
-                           f"{explicit.event_id or ''} como "
-                           f"'{explicit.status}' (no upcoming)"),
+                           f"{explicit.event_id or ''} como '{explicit.status}' "
+                           f"(no upcoming; evidencia de juego, no caduca"
+                           + (f"; snapshot de hace {age:.1f} h)" if age else ")")),
+                **info, "explicit_status": explicit.status}
+
+    # (B) HORA PROGRAMADA: sí caduca. Un snapshot viejo puede traer un horario
+    # ya reprogramado (lluvia, orden de juego, cambio de pista), así que no
+    # puede producir `ya_comenzado` ni conflicto por sí solo.
+    sched_age = _age_h(best.fetched_at, now)
+    if sched_age is not None and sched_age > schedule_max_age_h:
+        return {"verdict": "secondary_stale_schedule",
+                "snapshot_age_h": round(sched_age, 1),
+                "detail": (f"la fuente independiente solo aporta una hora PROGRAMADA "
+                           f"({best.commence_utc.isoformat()}) observada hace "
+                           f"{sched_age:.1f} h (> {schedule_max_age_h} h): pudo "
+                           f"reprogramarse, no es evidencia de juego ni contradice "
+                           f"una hora primaria más reciente"),
                 **info}
-    if best.commence_utc <= now:
-        return {"verdict": "ya_comenzado",
-                "detail": f"hora independiente {best.commence_utc.isoformat()} ya pasada",
-                **info}
+    # con snapshot reciente, una discrepancia material es contradicción real
     if declared_utc is not None:
         delta_min = abs((declared_utc - best.commence_utc).total_seconds()) / 60.0
         if delta_min > tolerance_minutes:
@@ -293,4 +319,10 @@ def cross_check(pair: tuple, declared_utc: datetime | None, idx: CommenceIndex,
                                f"independiente {best.commence_utc.isoformat()} "
                                f"({delta_min:.0f} min de diferencia)"),
                     "delta_minutes": round(delta_min, 1), **info}
+    # sin discrepancia (o sin hora primaria): una hora reciente ya pasada sí
+    # indica que el partido debería haber empezado
+    if best.commence_utc <= now:
+        return {"verdict": "ya_comenzado",
+                "detail": f"hora independiente {best.commence_utc.isoformat()} ya pasada",
+                **info}
     return {"verdict": "coincide", "detail": "hora corroborada", **info}
